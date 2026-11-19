@@ -41,6 +41,14 @@
   .ok-text { color: var(--ok); }
   .err-text { color: var(--danger); }
   details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  .run-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .run-card { border: 2px solid var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; background: #fafbfc; transition: all .12s; position: relative; -webkit-user-select: none; user-select: none; }
+  .run-card:active { transform: scale(.98); }
+  .run-card.sel { border-color: var(--primary); background: #eef2ff; }
+  .run-card .tick { position: absolute; top: 8px; right: 10px; width: 20px; height: 20px; border-radius: 50%; background: var(--primary); color: #fff; font-size: 13px; font-weight: 700; display: none; align-items: center; justify-content: center; }
+  .run-card.sel .tick { display: flex; }
+  .run-card .rn { font-weight: 600; font-size: 15px; padding-right: 26px; }
+  .run-card .ru { font-size: 12px; color: var(--muted); margin-top: 4px; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -99,13 +107,16 @@
 
   <div class="card">
     <h2>🚀 立即执行</h2>
-    <label>临时任务（填备注名，多个用中文逗号「，」分开；留空则执行全部保存的任务）</label>
-    <textarea id="manual" placeholder="资料 4，资料 6"></textarea>
-    <div class="btn-row">
-      <button id="runSaved">执行保存的任务</button>
-      <button id="runManual" class="ok">执行临时任务</button>
+    <div id="runCards">
+      <p class="hint">点上方「从仓库读取」加载任务卡片，或先在「定时任务」里添加并保存。</p>
     </div>
-    <p class="hint">备注名需先在上方「定时任务」里添加过，会自动匹配网址。执行后去 GitHub → Actions 查看进度。</p>
+    <div class="btn-row">
+      <button id="selectAll" class="ghost">全选</button>
+      <button id="selectNone" class="ghost">清空</button>
+    </div>
+    <button id="runSelected" style="margin-top:8px;">🎯 执行选中（<span id="selCount">0</span>）</button>
+    <button id="runAll" class="ghost" style="margin-top:8px;">执行全部定时任务</button>
+    <p class="hint">点击卡片选中/取消，支持多选；选中后点执行，PDF 会发到你的邮箱 / 企业微信 / 微信。</p>
   </div>
 
   <div class="card">
@@ -178,6 +189,29 @@ async function gh(method, path, body) {
 
 let currentSha = null;
 let tasks = [];
+let selected = new Set();
+
+function taskKey(t) { return (t.name || '') + '||' + (t.url || ''); }
+function updateSelCount() { const el = $('selCount'); if (el) el.textContent = selected.size; }
+function renderRunCards() {
+  const box = $('runCards');
+  const avail = tasks.map((t, i) => ({ t, i })).filter(x => x.t.enabled !== false);
+  if (!avail.length) { box.innerHTML = '<p class="hint">暂无可用任务，请先在上方添加并保存任务。</p>'; updateSelCount(); return; }
+  box.innerHTML = '<div class="run-grid">' + avail.map(({ t }) => {
+    const k = taskKey(t);
+    return `<div class="run-card ${selected.has(k) ? 'sel' : ''}" data-key="${esc(k)}">
+      <span class="tick">✓</span>
+      <div class="rn">${esc(t.name || '未命名')}</div>
+      <div class="ru">${esc(t.url)}</div>
+    </div>`;
+  }).join('') + '</div>';
+  box.querySelectorAll('.run-card').forEach(c => c.addEventListener('click', () => {
+    const k = c.dataset.key;
+    if (selected.has(k)) selected.delete(k); else selected.add(k);
+    renderRunCards();
+  }));
+  updateSelCount();
+}
 
 function renderTasks() {
   const box = $('tasks');
@@ -200,12 +234,14 @@ function renderTasks() {
   box.querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => {
     tasks.splice(+b.dataset.del, 1); renderTasks();
   }));
+  renderRunCards();
 }
 function esc(s) { return String(s).replace(/"/g, '&quot;'); }
 function onEdit(e) {
   const i = +e.target.dataset.i, k = e.target.dataset.k;
   if (k === 'enabled') tasks[i][k] = e.target.checked;
   else tasks[i][k] = e.target.value;
+  renderRunCards();
 }
 
 $('addTask').onclick = () => { tasks.push({ name: '新任务', url: '', frame_selector: '', enabled: true }); renderTasks(); };
@@ -249,26 +285,19 @@ async function dispatch(manual) {
     log(manual ? '已触发：执行临时任务' : '已触发：执行保存的任务', 'ok-text');
   } catch (e) { log(e.message, 'err-text'); }
 }
-$('runSaved').onclick = () => dispatch('');
-$('runManual').onclick = async () => {
-  const raw = $('manual').value.trim();
-  if (!raw) { dispatch(''); return; }
-  try {
-    if (!tasks.length) await loadTasksData();
-    const entries = raw.split(/[;，,\n]+/).map(s => s.trim()).filter(Boolean);
-    const parts = [];
-    const missing = [];
-    for (const name of entries) {
-      if (name.includes('|') || /^https?:\/\//i.test(name)) { parts.push(name); continue; }
-      const t = tasks.find(x => (x.name || '').trim() === name);
-      if (t) parts.push(t.name + ' | ' + t.url);
-      else missing.push(name);
-    }
-    if (missing.length) log('未找到这些备注名，已跳过：' + missing.join('、'), 'err-text');
-    if (!parts.length) { log('没有可执行的任务', 'err-text'); return; }
-    dispatch(parts.join('; '));
-  } catch (e) { log(e.message, 'err-text'); }
+$('runAll').onclick = () => dispatch('');
+$('runSelected').onclick = () => {
+  if (!selected.size) { log('请先点击选中要执行的任务', 'err-text'); return; }
+  const parts = [];
+  for (const k of selected) {
+    const t = tasks.find(x => taskKey(x) === k);
+    if (t) parts.push(t.name + ' | ' + t.url);
+  }
+  if (!parts.length) { log('选中的任务已失效，请重新选择', 'err-text'); return; }
+  dispatch(parts.join('; '));
 };
+$('selectAll').onclick = () => { tasks.forEach(t => { if (t.enabled !== false) selected.add(taskKey(t)); }); renderRunCards(); };
+$('selectNone').onclick = () => { selected.clear(); renderRunCards(); };
 
 $('saveSet').onclick = saveCfg;
 $('clearSet').onclick = () => { ['token','owner','repo','workflow'].forEach(k => LS.del(k)); $('token').value=''; log('已清除本机设置'); };
