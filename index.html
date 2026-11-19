@@ -62,8 +62,10 @@
   .chip.idle { background: #e6f4ea; color: var(--ok); }
   .chip.busy { background: #fff4e5; color: #b25e09; }
   .status-list { display: flex; flex-direction: column; gap: 6px; }
-  .status-row { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: #fafbfc; font-size: 13px; }
-  .status-row .st-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status-row { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: #fafbfc; font-size: 13px; }
+  .status-row .st-main { flex: 1; min-width: 0; }
+  .status-row .st-label { white-space: normal; word-break: break-word; line-height: 1.35; }
+  .status-row .st-err { margin-top: 3px; color: var(--danger); font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-time { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
   .st-ico { flex: 0 0 16px; text-align: center; font-size: 14px; }
   .spinner { flex: 0 0 15px; width: 15px; height: 15px; border: 2px solid #cfd6e4; border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
@@ -142,7 +144,7 @@
   </div>
 
   <div class="card">
-    <h2>📊 今日任务状态</h2>
+    <h2>📊 任务列表</h2>
     <div id="statusList"><p class="hint">暂无今日任务记录</p></div>
   </div>
 
@@ -356,25 +358,83 @@ async function fetchRuns() {
   return apiRuns;
 }
 
+let reasonCache = {};
+try { reasonCache = JSON.parse(LS.get('reasons') || '{}'); } catch (e) { reasonCache = {}; }
+
+function readDispatches() {
+  try { return JSON.parse(LS.get('dispatches') || '[]'); } catch (e) { return []; }
+}
+function labelFromText(text) {
+  if (!text || text === '__ALL__') return '全部定时任务';
+  return text.split(';').map(s => s.split('|')[0].trim()).filter(Boolean).join(' | ');
+}
+function countFromText(text) {
+  if (!text || text === '__ALL__') return Math.max(1, tasks.filter(t => t.enabled !== false).length);
+  return Math.max(1, text.split(';').filter(s => s.trim()).length);
+}
+
 function mergedRows() {
   const localById = {};
   runRecords.forEach(r => { localById[r.id] = r; });
+  const sent = readDispatches();
   const enabledCount = Math.max(1, tasks.filter(t => t.enabled !== false).length);
   const rows = apiRuns.map(r => {
+    const created = new Date(r.created_at).getTime();
     const rec = localById[r.id];
+    if (rec) return { id: r.id, label: rec.label, count: rec.count, status: r.status, conclusion: r.conclusion, ts: rec.ts };
+    const near = sent.find(d => Math.abs(d.ts - created) < 180000);
+    if (near) return { id: r.id, label: labelFromText(near.key), count: countFromText(near.key), status: r.status, conclusion: r.conclusion, ts: created };
     return {
       id: r.id,
-      label: rec ? rec.label : (r.event === 'schedule' ? '定时任务（自动）' : '手动任务'),
-      count: rec ? rec.count : (r.event === 'schedule' ? enabledCount : 1),
+      label: r.event === 'schedule' ? '定时任务（自动）' : '手动任务',
+      count: r.event === 'schedule' ? enabledCount : 1,
       status: r.status,
       conclusion: r.conclusion,
-      ts: rec ? rec.ts : new Date(r.created_at).getTime(),
+      ts: created,
     };
   });
   const apiIds = new Set(apiRuns.map(r => r.id));
   runRecords.forEach(r => { if (!apiIds.has(r.id)) rows.push({ ...r, status: 'queued', conclusion: null }); });
   rows.sort((a, b) => b.ts - a.ts);
   return rows;
+}
+
+function failText(row) {
+  if (row.status !== 'completed' || !row.conclusion || row.conclusion === 'success') return '';
+  if (row.conclusion === 'cancelled') return '已取消';
+  const detail = reasonCache[row.id];
+  if (row.conclusion === 'timed_out') return '执行超时' + (detail ? '：' + detail : '');
+  return '执行失败' + (detail ? '：' + detail : '');
+}
+
+async function fetchReason(runId) {
+  if (reasonCache[runId]) return reasonCache[runId];
+  let text = '';
+  try {
+    const data = await gh('GET', `/actions/runs/${runId}/jobs`);
+    const jobs = data.jobs || [];
+    const failed = jobs.find(j => j.conclusion && j.conclusion !== 'success') || jobs[0];
+    if (failed) {
+      const step = (failed.steps || []).find(s => s.conclusion && s.conclusion !== 'success');
+      text = step ? step.name : '';
+      try {
+        const ann = await gh('GET', `/check-runs/${failed.id}/annotations`);
+        const hit = Array.isArray(ann) ? ann.find(a => a && a.message) : null;
+        if (hit) text = hit.message;
+      } catch (e) { /* 忽略 */ }
+    }
+  } catch (e) { text = ''; }
+  text = (text || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+  reasonCache[runId] = text;
+  LS.set('reasons', JSON.stringify(reasonCache));
+  return text;
+}
+
+async function loadFailReasons(rows) {
+  const pending = rows.filter(r =>
+    r.status === 'completed' && r.conclusion && r.conclusion !== 'success' && r.conclusion !== 'cancelled' && !reasonCache[r.id]
+  ).slice(0, 3);
+  for (const row of pending) await fetchReason(row.id);
 }
 
 function renderRunStatus() {
@@ -401,13 +461,19 @@ function renderRunStatus() {
     else if (r.conclusion === 'cancelled') icon = '<span class="st-ico">⏹</span>';
     else icon = '<span class="st-ico">❌</span>';
     const time = new Date(r.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-    return `<div class="status-row">${icon}<span class="st-label">${esc(r.label)}</span><span class="st-time">${time}</span></div>`;
+    const reason = failText(r);
+    const reasonHtml = reason ? `<div class="st-err">${esc(reason)}</div>` : '';
+    return `<div class="status-row">${icon}<div class="st-main"><div class="st-label">${esc(r.label)}</div>${reasonHtml}</div><span class="st-time">${time}</span></div>`;
   }).join('') + '</div>';
 }
 
 async function pollStatus() {
   if (!LS.get('token')) return;
-  try { await fetchRuns(); renderRunStatus(); } catch (e) { /* 静默失败，不影响使用 */ }
+  try {
+    await fetchRuns();
+    await loadFailReasons(mergedRows());
+    renderRunStatus();
+  } catch (e) { /* 静默失败，不影响使用 */ }
 }
 function startPolling() {
   if (pollTimer) return;
@@ -439,10 +505,8 @@ async function recordLatestRun() {
 async function dispatch(manual, meta) {
   const key = manual || '__ALL__';
   const now = Date.now();
-  let sent = [];
-  try { sent = JSON.parse(LS.get('dispatches') || '[]'); } catch (e) { sent = []; }
-  sent = sent.filter(d => now - d.ts < 300000);
-  if (sent.some(d => d.key === key)) {
+  let sent = readDispatches();
+  if (sent.some(d => d.key === key && now - d.ts < 300000)) {
     toast('5 分钟内已有相同任务执行过', true);
     log('已阻止：5 分钟内已有相同任务执行过', 'err-text');
     return false;
@@ -454,7 +518,7 @@ async function dispatch(manual, meta) {
   try {
     await gh('POST', `/actions/workflows/${cfg().workflow}/dispatches`, { ref: 'main', inputs: { tasks: manual || '' } });
     sent.push({ key, ts: now });
-    LS.set('dispatches', JSON.stringify(sent));
+    LS.set('dispatches', JSON.stringify(sent.slice(-60)));
     toast('✓ 已下发任务');
     log('已下发任务：' + label, 'ok-text');
     pendingDispatch = { label, count, tries: 0 };

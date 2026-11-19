@@ -593,6 +593,9 @@ async def async_main() -> int:
         finally:
             await browser.close()
 
+    if failures:
+        for item in failures:
+            print("::error::" + item.replace("\n", " ")[:400], flush=True)
     if failures and pdf_count == 0:
         logging.error("全部任务均失败：\n%s", "\n".join(failures))
         return 1
