@@ -67,6 +67,9 @@
   .status-row .st-label { white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-err { margin-top: 3px; color: var(--danger); font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-time { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+  .chk-row { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 4px 0 6px; }
+  .chk { display: flex; align-items: center; gap: 6px; font-weight: 600; margin: 0; }
+  .chk input { width: auto; margin: 0; }
   .st-ico { flex: 0 0 16px; text-align: center; font-size: 14px; }
   .spinner { flex: 0 0 15px; width: 15px; height: 15px; border: 2px solid #cfd6e4; border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -95,6 +98,13 @@
       </div>
       <label>工作流文件名</label>
       <input type="text" id="workflow" value="pdf-delivery.yml">
+      <label>推送方式（取消勾选即不再推送）</label>
+      <div class="chk-row">
+        <label class="chk"><input type="checkbox" id="chEmail" checked><span>QQ 邮箱</span></label>
+        <label class="chk"><input type="checkbox" id="chWecom" checked><span>企业微信</span></label>
+        <label class="chk"><input type="checkbox" id="chPushplus" checked><span>微信（PushPlus）</span></label>
+      </div>
+      <p class="hint" id="chHint">修改后 5 秒自动保存到仓库</p>
       <div class="btn-row">
         <button id="saveSet" class="ghost">保存设置</button>
         <button id="clearSet" class="danger">清除设置</button>
@@ -666,11 +676,58 @@ $('saveSched').onclick = async () => {
   } catch (e) { log(e.message, 'err-text'); }
 };
 
+// ===== 推送方式开关（改动后 5 秒自动保存）=====
+let channelsSha = null;
+let channelTimer = null;
+
+function readChannelBoxes() {
+  return { email: $('chEmail').checked, wecom: $('chWecom').checked, pushplus: $('chPushplus').checked };
+}
+function applyChannels(data) {
+  $('chEmail').checked = data.email !== false;
+  $('chWecom').checked = data.wecom !== false;
+  $('chPushplus').checked = data.pushplus !== false;
+}
+async function loadChannels() {
+  if (!LS.get('token')) return;
+  try {
+    const data = await gh('GET', '/contents/channels.json');
+    channelsSha = data.sha;
+    applyChannels(JSON.parse(b64decodeUnicode(data.content)));
+    $('chHint').textContent = '已读取仓库中的推送设置';
+  } catch (e) {
+    $('chHint').textContent = '仓库暂无推送设置，默认全部开启';
+  }
+}
+async function saveChannels() {
+  try {
+    $('chHint').textContent = '正在保存到仓库…';
+    if (!channelsSha) {
+      try { channelsSha = (await gh('GET', '/contents/channels.json')).sha; } catch (e) { channelsSha = null; }
+    }
+    const payload = { message: '更新推送方式', content: b64encodeUnicode(JSON.stringify(readChannelBoxes(), null, 2)) };
+    if (channelsSha) payload.sha = channelsSha;
+    const res = await gh('PUT', '/contents/channels.json', payload);
+    if (res && res.content && res.content.sha) channelsSha = res.content.sha;
+    const on = Object.values(readChannelBoxes()).filter(Boolean).length;
+    $('chHint').textContent = '✓ 已保存（' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) + '），当前开启 ' + on + ' 种方式';
+  } catch (e) {
+    $('chHint').textContent = '保存失败：' + e.message;
+  }
+}
+function scheduleChannelSave() {
+  clearTimeout(channelTimer);
+  $('chHint').textContent = '5 秒后自动保存…';
+  channelTimer = setTimeout(saveChannels, 5000);
+}
+['chEmail', 'chWecom', 'chPushplus'].forEach(id => $(id).addEventListener('change', scheduleChannelSave));
+
 loadCfg();
 loadRecords();
 if (LS.get('token')) {
   loadTasksData().catch(() => {});
   loadSchedule().catch(() => {});
+  loadChannels().catch(() => {});
   pollStatus();
   startPolling();
 }

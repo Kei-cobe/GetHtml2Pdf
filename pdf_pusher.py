@@ -569,11 +569,34 @@ def send_pushplus(result: CaptureResult, public_url: str | None) -> None:
     logging.info("微信（PushPlus）推送已发送")
 
 
-def deliver_pdf(result: CaptureResult) -> list[str]:
+DEFAULT_CHANNELS = {"email": True, "wecom": True, "pushplus": True}
+CHANNEL_NAMES = {"email": "QQ 邮箱", "wecom": "企业微信", "pushplus": "微信（PushPlus）"}
+
+
+def load_channels(config_path: Path) -> dict:
+    """读取 channels.json 中的推送开关，缺省全部开启。"""
+    path = Path(config_path).with_name("channels.json")
+    channels = dict(DEFAULT_CHANNELS)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logging.info("未找到 channels.json，默认开启全部推送方式")
+        return channels
+    for key in channels:
+        if key in data:
+            channels[key] = bool(data[key])
+    disabled = [CHANNEL_NAMES[k] for k, enabled in channels.items() if not enabled]
+    if disabled:
+        logging.info("已按设置关闭推送方式：%s", "、".join(disabled))
+    return channels
+
+
+def deliver_pdf(result: CaptureResult, channels: dict | None = None) -> list[str]:
+    channels = DEFAULT_CHANNELS if channels is None else channels
     errors = []
     email_variables = ("QQ_SMTP_USERNAME", "QQ_SMTP_AUTH_CODE", "QQ_EMAIL_TO")
     configured_email = [name for name in email_variables if os.getenv(name)]
-    if configured_email:
+    if configured_email and channels.get("email", True):
         if len(configured_email) != len(email_variables):
             errors.append("QQ 邮件 Secrets 配置不完整")
         else:
@@ -581,18 +604,20 @@ def deliver_pdf(result: CaptureResult) -> list[str]:
                 send_qq_email(result)
             except RuntimeError as exc:
                 errors.append(str(exc))
-    if os.getenv("WECOM_WEBHOOK_KEY"):
+    if os.getenv("WECOM_WEBHOOK_KEY") and channels.get("wecom", True):
         try:
             send_wecom_pdf(result)
         except RuntimeError as exc:
             errors.append(str(exc))
-    if os.getenv("PUSHPLUS_TOKEN"):
+    if os.getenv("PUSHPLUS_TOKEN") and channels.get("pushplus", True):
         try:
             public_url = upload_public(result.pdf_path)
             send_pushplus(result, public_url)
         except RuntimeError as exc:
             errors.append(str(exc))
-    if (
+    if not any(channels.get(name, True) for name in channels):
+        logging.info("推送方式已在控制台全部关闭，仅保留 PDF 文件")
+    elif (
         not configured_email
         and not os.getenv("WECOM_WEBHOOK_KEY")
         and not os.getenv("PUSHPLUS_TOKEN")
@@ -652,6 +677,7 @@ async def async_main() -> int:
     if not tasks:
         raise ValueError("没有可执行的任务")
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    channels = load_channels(args.config)
 
     failures = []
     pdf_count = 0
@@ -663,7 +689,7 @@ async def async_main() -> int:
                     result = await capture_pdf(browser, task, args.output_dir)
                     pdf_count += 1
                     if not args.no_push:
-                        failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result))
+                        failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result, channels))
                 except Exception as exc:
                     logging.exception("任务失败：%s", task.name)
                     failures.append(f"{task.name}：{humanize_failure(exc)}")
