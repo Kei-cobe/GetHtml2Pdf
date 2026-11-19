@@ -61,7 +61,7 @@
   .chip { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
   .chip.idle { background: #e6f4ea; color: var(--ok); }
   .chip.busy { background: #fff4e5; color: #b25e09; }
-  .status-list { display: flex; flex-direction: column; gap: 6px; }
+  .status-list { display: flex; flex-direction: column; gap: 6px; max-height: 120px; overflow-y: auto; padding-right: 2px; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
   .status-row { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: #fafbfc; font-size: 13px; }
   .status-row .st-main { flex: 1; min-width: 0; }
   .status-row .st-label { white-space: normal; word-break: break-word; line-height: 1.35; }
