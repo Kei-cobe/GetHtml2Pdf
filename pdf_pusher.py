@@ -395,7 +395,8 @@ def send_qq_email(result: CaptureResult) -> None:
     auth_code = os.environ["QQ_SMTP_AUTH_CODE"]
     recipients = parse_recipients(os.environ["QQ_EMAIL_TO"])
     if not recipients:
-        raise RuntimeError("QQ_EMAIL_TO 没有有效收件地址，请填写形如 123456@qq.com 的地址")
+        logging.info("QQ_EMAIL_TO 未填写有效邮箱地址（当前为占位），跳过邮件推送")
+        return
     try:
         smtp_send_with_retry(build_email(result, username, recipients, True), username, auth_code)
         logging.info("QQ 邮件 PDF 附件已发送")
