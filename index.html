@@ -74,9 +74,11 @@
   .st-ico { flex: 0 0 16px; text-align: center; font-size: 14px; }
   .spinner { flex: 0 0 15px; width: 15px; height: 15px; border: 2px solid #cfd6e4; border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(16px); max-width: 88vw; padding: 11px 18px; border-radius: 10px; background: rgba(31,35,40,.95); color: #fff; font-size: 14px; font-weight: 600; text-align: center; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 99; }
-  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-  #toast.err { background: rgba(193,32,45,.96); }
+  #toast { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -46%) scale(.94); width: min(74vw, 300px); padding: 22px 20px 20px; border-radius: 16px; background: rgba(31,35,40,.96); color: #fff; text-align: center; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 99; box-shadow: 0 12px 34px rgba(0,0,0,.28); }
+  #toast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #toast.err { background: rgba(193,32,45,.97); }
+  #toast .toast-ico { display: block; font-size: 46px; line-height: 1; margin-bottom: 12px; }
+  #toast .toast-msg { display: block; font-size: 16px; font-weight: 600; line-height: 1.45; word-break: break-word; }
 </style>
 </head>
 <body>
@@ -357,7 +359,14 @@ function saveRecords() { LS.set('runs', JSON.stringify(runRecords.slice(-60))); 
 function toast(msg, isErr) {
   const el = $('toast');
   if (!el) return;
-  el.textContent = msg;
+  let text = String(msg == null ? '' : msg);
+  let icon = isErr ? '❌' : '✓';
+  const hit = text.match(/^\s*([✓✔❌✕])\s*/);
+  if (hit) {
+    icon = hit[1] === '✔' ? '✓' : hit[1];
+    text = text.slice(hit[0].length);
+  }
+  el.innerHTML = '<span class="toast-ico">' + icon + '</span><span class="toast-msg">' + esc(text) + '</span>';
   el.className = isErr ? 'show err' : 'show';
   clearTimeout(el._t);
   el._t = setTimeout(() => { el.className = ''; }, 2600);
@@ -557,8 +566,8 @@ async function dispatch(manual, meta) {
   const now = Date.now();
   let sent = readDispatches();
   if (sent.some(d => d.key === key && now - d.ts < 300000)) {
-    toast('5 分钟内已有相同任务执行过', true);
-    log('已阻止：5 分钟内已有相同任务执行过', 'err-text');
+    toast('5 分钟内请勿重复触发相同任务', true);
+    log('已阻止：5 分钟内请勿重复触发相同任务', 'err-text');
     return false;
   }
   const label = (meta && meta.label) || (manual
