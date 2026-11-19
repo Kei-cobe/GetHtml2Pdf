@@ -5,6 +5,12 @@
       "url": "https://fenghuangtianji-jiulianjie4.lkhjgfd.app/#4",
       "frame_selector": "iframe[src*='yjjy/ziliao.html']",
       "enabled": true
+    },
+    {
+      "name": "49论坛",
+      "url": "https://49lt49667-gg18.jsxq.app/",
+      "frame_selector": "",
+      "enabled": true
     }
   ]
 }
