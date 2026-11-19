@@ -49,6 +49,13 @@
   .run-card.sel .tick { display: flex; }
   .run-card .rn { font-weight: 600; font-size: 15px; padding-right: 26px; }
   .run-card .ru { font-size: 12px; color: var(--muted); margin-top: 4px; word-break: break-all; }
+  .fold { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 4px; }
+  .fold-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; cursor: pointer; background: #f6f8fa; font-size: 14px; font-weight: 600; -webkit-user-select: none; user-select: none; }
+  .fold-head:active { background: #eef0f3; }
+  .fold-arrow { font-size: 13px; font-weight: 500; color: var(--primary); transition: transform .15s; }
+  .fold-body { padding: 10px; }
+  .fold.collapsed .fold-body { display: none; }
+  .fold.collapsed .fold-arrow { transform: rotate(-90deg); }
 </style>
 </head>
 <body>
@@ -190,14 +197,26 @@ async function gh(method, path, body) {
 let currentSha = null;
 let tasks = [];
 let selected = new Set();
+let tasksCollapsed = true;
+let runCollapsed = true;
 
 function taskKey(t) { return (t.name || '') + '||' + (t.url || ''); }
+function foldHtml(scope, count, label, bodyHtml, collapsed) {
+  const arrow = collapsed ? '▸ 展开' : '▾ 收起';
+  return `<div class="fold ${collapsed ? 'collapsed' : ''}" data-fold="${scope}">
+    <div class="fold-head" data-fold-toggle>
+      <span>${label}（共 ${count} 个）</span>
+      <span class="fold-arrow">${arrow}</span>
+    </div>
+    <div class="fold-body">${bodyHtml}</div>
+  </div>`;
+}
 function updateSelCount() { const el = $('selCount'); if (el) el.textContent = selected.size; }
 function renderRunCards() {
   const box = $('runCards');
   const avail = tasks.map((t, i) => ({ t, i })).filter(x => x.t.enabled !== false);
   if (!avail.length) { box.innerHTML = '<p class="hint">暂无可用任务，请先在上方添加并保存任务。</p>'; updateSelCount(); return; }
-  box.innerHTML = '<div class="run-grid">' + avail.map(({ t }) => {
+  const inner = '<div class="run-grid">' + avail.map(({ t }) => {
     const k = taskKey(t);
     return `<div class="run-card ${selected.has(k) ? 'sel' : ''}" data-key="${esc(k)}">
       <span class="tick">✓</span>
@@ -205,18 +224,22 @@ function renderRunCards() {
       <div class="ru">${esc(t.url)}</div>
     </div>`;
   }).join('') + '</div>';
+  box.innerHTML = avail.length >= 2 ? foldHtml('run', avail.length, '可选任务', inner, runCollapsed) : inner;
   box.querySelectorAll('.run-card').forEach(c => c.addEventListener('click', () => {
     const k = c.dataset.key;
     if (selected.has(k)) selected.delete(k); else selected.add(k);
     renderRunCards();
+  }));
+  box.querySelectorAll('[data-fold-toggle]').forEach(h => h.addEventListener('click', () => {
+    runCollapsed = !runCollapsed; renderRunCards();
   }));
   updateSelCount();
 }
 
 function renderTasks() {
   const box = $('tasks');
-  if (!tasks.length) { box.innerHTML = '<p class="hint">暂无任务，点「＋ 添加任务」</p>'; return; }
-  box.innerHTML = tasks.map((t, i) => `
+  if (!tasks.length) { box.innerHTML = '<p class="hint">暂无任务，点「＋ 添加任务」</p>'; renderRunCards(); return; }
+  const inner = tasks.map((t, i) => `
     <div class="task">
       <div class="task-top">
         <span class="switch"><input type="checkbox" data-i="${i}" data-k="enabled" ${t.enabled !== false ? 'checked' : ''}></span>
@@ -226,12 +249,16 @@ function renderTasks() {
       <input type="text" data-i="${i}" data-k="url" placeholder="网址 https://..." value="${esc(t.url || '')}">
     </div>
   `).join('');
+  box.innerHTML = tasks.length >= 2 ? foldHtml('tasks', tasks.length, '定时任务', inner, tasksCollapsed) : inner;
   box.querySelectorAll('input').forEach(inp => {
     inp.addEventListener('input', onEdit);
     inp.addEventListener('change', onEdit);
   });
   box.querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => {
     tasks.splice(+b.dataset.del, 1); renderTasks();
+  }));
+  box.querySelectorAll('[data-fold-toggle]').forEach(h => h.addEventListener('click', () => {
+    tasksCollapsed = !tasksCollapsed; renderTasks();
   }));
   renderRunCards();
 }
