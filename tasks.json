@@ -1,0 +1,10 @@
+{
+  "tasks": [
+    {
+      "name": "资料 4",
+      "url": "https://fenghuangtianji-jiulianjie4.lkhjgfd.app/#4",
+      "frame_selector": "iframe[src*='yjjy/ziliao.html']",
+      "enabled": true
+    }
+  ]
+}

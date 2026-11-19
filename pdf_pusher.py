@@ -1,0 +1,478 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import re
+import smtplib
+import sys
+from dataclasses import dataclass
+from datetime import datetime
+from email.message import EmailMessage
+from email.utils import formatdate
+from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin, urlsplit
+from zoneinfo import ZoneInfo
+
+import requests
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Page, async_playwright
+
+TIMEZONE = ZoneInfo("Asia/Shanghai")
+NAVIGATION_TIMEOUT_MS = 60_000
+MAX_SCROLL_STEPS = 100
+
+
+@dataclass(frozen=True)
+class Task:
+    name: str
+    url: str
+    frame_selector: str | None = None
+    remove_selectors: tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any], index: int = 0) -> "Task":
+        url = validate_http_url(str(data.get("url", "")))
+        name = str(data.get("name") or "").strip() or f"网页任务 {index + 1}"
+        frame_selector = str(data.get("frame_selector") or "").strip() or None
+        remove_selectors = tuple(str(item) for item in data.get("remove_selectors", []))
+        return cls(name, url, frame_selector, remove_selectors)
+
+
+@dataclass(frozen=True)
+class CaptureResult:
+    task: Task
+    pdf_path: Path
+    final_url: str
+
+
+def validate_http_url(value: str) -> str:
+    url = value.strip()
+    if not url or any(char.isspace() for char in url):
+        raise ValueError("网址为空或包含空白字符")
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("仅支持有效的 http/https 网址")
+        if parsed.username or parsed.password:
+            raise ValueError("网址中不能包含账号或密码")
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"无效网址：{url}") from exc
+    return url
+
+
+def parse_manual_tasks(value: str) -> list[Task]:
+    entries = [item.strip() for item in re.split(r"[;\n]+", value) if item.strip()]
+    tasks = []
+    for index, entry in enumerate(entries):
+        if "|" in entry:
+            name, url = entry.split("|", 1)
+            task = Task.from_mapping({"name": name.strip(), "url": url.strip()}, index)
+        else:
+            task = Task.from_mapping({"name": f"手动任务 {index + 1}", "url": entry}, index)
+        tasks.append(task)
+    return tasks
+
+
+def load_tasks(path: Path) -> list[Task]:
+    with path.open(encoding="utf-8") as file:
+        config = json.load(file)
+    tasks = []
+    for index, item in enumerate(config.get("tasks", [])):
+        if item.get("enabled", True):
+            tasks.append(Task.from_mapping(item, index))
+    return tasks
+
+
+def safe_pdf_path(output_dir: Path, task: Task) -> Path:
+    name = re.sub(r"[\\/:*?\"<>|\s]+", "-", task.name).strip("-._")[:60] or "webpage"
+    timestamp = datetime.now(TIMEZONE).strftime("%Y%m%d-%H%M%S")
+    digest = hashlib.sha1(task.url.encode("utf-8")).hexdigest()[:8]
+    return output_dir / f"{name}-{timestamp}-{digest}.pdf"
+
+
+def origin(url: str) -> tuple[str, str, int]:
+    parsed = urlsplit(url)
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
+
+
+def same_origin(first: str, second: str) -> bool:
+    try:
+        return origin(first) == origin(second)
+    except ValueError:
+        return False
+
+
+async def wait_for_load(page: Page) -> None:
+    try:
+        await page.wait_for_load_state("load", timeout=30_000)
+    except PlaywrightTimeoutError:
+        logging.warning("页面 load 事件等待超时，将继续处理已加载内容")
+
+
+async def navigate(page: Page, url: str) -> None:
+    response = await page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+    if response and response.status >= 400:
+        raise RuntimeError(f"网页返回 HTTP {response.status}")
+    await wait_for_load(page)
+
+
+async def find_content_frame_url(page: Page, selector: str | None) -> str | None:
+    if selector:
+        element = await page.wait_for_selector(selector, state="attached", timeout=15_000)
+        if not element:
+            raise RuntimeError(f"找不到主内容 iframe：{selector}")
+        src = await element.get_attribute("src")
+        if not src:
+            raise RuntimeError("主内容 iframe 没有 src")
+        frame_url = urljoin(page.url, src)
+        if not same_origin(page.url, frame_url):
+            raise RuntimeError("为避免误入第三方页面，仅支持同源主内容 iframe")
+        return frame_url
+
+    viewport_height = page.viewport_size["height"] if page.viewport_size else 800
+    candidates: list[tuple[int, str]] = []
+    for element in await page.query_selector_all("iframe[src]"):
+        src = await element.get_attribute("src")
+        if not src:
+            continue
+        frame_url = urljoin(page.url, src)
+        if not same_origin(page.url, frame_url):
+            continue
+        box = await element.bounding_box()
+        if not box or box["width"] < 300:
+            continue
+        content_height = int(box["height"])
+        frame = await element.content_frame()
+        if frame:
+            try:
+                content_height = max(
+                    content_height,
+                    await frame.evaluate("() => document.documentElement.scrollHeight"),
+                )
+            except Exception:
+                pass
+        if content_height >= max(1_200, int(viewport_height * 1.5)):
+            candidates.append((int(content_height * box["width"]), frame_url))
+    return max(candidates)[1] if candidates else None
+
+
+async def auto_scroll(page: Page) -> None:
+    previous_height = -1
+    stable_rounds = 0
+    for _ in range(MAX_SCROLL_STEPS):
+        state = await page.evaluate(
+            """() => {
+                const root = document.scrollingElement || document.documentElement;
+                const containers = Array.from(document.querySelectorAll('body *')).filter(el => {
+                    const style = getComputedStyle(el);
+                    return el.clientHeight > 50 && el.scrollHeight > el.clientHeight + 100
+                        && /(auto|scroll)/.test(style.overflowY);
+                });
+                return {
+                    height: root.scrollHeight,
+                    atBottom: root.scrollTop + innerHeight >= root.scrollHeight - 20,
+                    containersDone: containers.every(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 20)
+                };
+            }"""
+        )
+        if state["atBottom"] and state["containersDone"] and state["height"] == previous_height:
+            stable_rounds += 1
+            if stable_rounds >= 2:
+                break
+        else:
+            stable_rounds = 0
+        previous_height = state["height"]
+        await page.evaluate(
+            """() => {
+                document.querySelectorAll('img').forEach(img => img.loading = 'eager');
+                window.scrollBy(0, Math.max(innerHeight * 0.85, 500));
+                document.querySelectorAll('body *').forEach(el => {
+                    const style = getComputedStyle(el);
+                    if (el.clientHeight > 50 && el.scrollHeight > el.clientHeight + 100
+                            && /(auto|scroll)/.test(style.overflowY)) {
+                        el.setAttribute('data-pdf-scroll-container', '');
+                        el.scrollTop = Math.min(el.scrollTop + el.clientHeight * 0.85, el.scrollHeight);
+                    }
+                });
+            }"""
+        )
+        await page.wait_for_timeout(450)
+    else:
+        logging.warning("已达到最大滚动步数，将保存当前已加载内容")
+
+
+async def prepare_document(page: Page, task: Task) -> None:
+    await auto_scroll(page)
+    await page.evaluate(
+        """(removeSelectors) => {
+            for (const selector of removeSelectors) {
+                document.querySelectorAll(selector).forEach(el => el.remove());
+            }
+            document.querySelectorAll('body *').forEach(el => {
+                if (getComputedStyle(el).position === 'fixed'
+                        && !el.hasAttribute('data-pdf-scroll-container')) {
+                    el.style.setProperty('display', 'none', 'important');
+                }
+            });
+            document.querySelectorAll('img').forEach(img => {
+                img.loading = 'eager';
+                const lazySrc = img.getAttribute('data-src') || img.getAttribute('data-original');
+                if (!img.getAttribute('src') && lazySrc) img.src = lazySrc;
+            });
+            window.scrollTo(0, 0);
+            document.querySelectorAll('[data-pdf-scroll-container]').forEach(el => el.scrollTop = 0);
+        }""",
+        list(task.remove_selectors),
+    )
+    await page.add_style_tag(
+        content="""
+            *, *::before, *::after {
+                animation: none !important;
+                transition: none !important;
+                caret-color: transparent !important;
+            }
+            [data-pdf-scroll-container] {
+                height: auto !important;
+                max-height: none !important;
+                overflow: visible !important;
+            }
+            html, body {
+                height: auto !important;
+                overflow: visible !important;
+            }
+        """
+    )
+    try:
+        await page.wait_for_function(
+            "() => Array.from(document.images).every(img => img.complete)", timeout=30_000
+        )
+    except PlaywrightTimeoutError:
+        incomplete = await page.evaluate(
+            "() => Array.from(document.images).filter(img => !img.complete).length"
+        )
+        logging.warning("仍有 %s 张图片未加载完成，将先生成 PDF", incomplete)
+    try:
+        await asyncio.wait_for(
+            page.evaluate("() => document.fonts ? document.fonts.ready : Promise.resolve()"),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        logging.warning("字体等待超时，将继续生成 PDF")
+
+
+async def capture_pdf(browser: Any, task: Task, output_dir: Path) -> CaptureResult:
+    context = await browser.new_context(
+        viewport={"width": 1440, "height": 1000},
+        locale="zh-CN",
+        timezone_id="Asia/Shanghai",
+    )
+    try:
+        page = await context.new_page()
+        page.set_default_timeout(30_000)
+        await page.emulate_media(media="screen")
+        logging.info("开始抓取：%s", task.name)
+        await navigate(page, task.url)
+        frame_url = await find_content_frame_url(page, task.frame_selector)
+        if frame_url:
+            logging.info("已定位同源主内容 iframe，改为完整打印其内容")
+            await navigate(page, frame_url)
+        await prepare_document(page, task)
+        pdf_path = safe_pdf_path(output_dir, task)
+        await page.pdf(
+            path=str(pdf_path),
+            format="A4",
+            print_background=True,
+            display_header_footer=True,
+            header_template="<div></div>",
+            footer_template="""
+                <div style="box-sizing:border-box;width:100%;padding:0 10mm;font-size:8px;color:#666;display:flex;justify-content:space-between;">
+                    <span class="date"></span>
+                    <span><span class="pageNumber"></span> / <span class="totalPages"></span></span>
+                </div>
+            """,
+            margin={"top": "10mm", "right": "8mm", "bottom": "14mm", "left": "8mm"},
+        )
+        if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
+            raise RuntimeError("PDF 文件未生成")
+        logging.info("PDF 已生成：%s（%.1f MB）", pdf_path.name, pdf_path.stat().st_size / 1_048_576)
+        return CaptureResult(task, pdf_path, page.url)
+    finally:
+        await context.close()
+
+
+def github_run_url() -> str:
+    server = os.getenv("GITHUB_SERVER_URL", "https://github.com")
+    repository = os.getenv("GITHUB_REPOSITORY")
+    run_id = os.getenv("GITHUB_RUN_ID")
+    return f"{server}/{repository}/actions/runs/{run_id}" if repository and run_id else ""
+
+
+def smtp_send(message: EmailMessage, username: str, auth_code: str) -> None:
+    with smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=60) as smtp:
+        smtp.login(username, auth_code)
+        smtp.send_message(message)
+
+
+def build_email(result: CaptureResult, sender: str, recipients: list[str], attach_pdf: bool) -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = ", ".join(recipients)
+    message["Date"] = formatdate(localtime=True)
+    message["Subject"] = f"[网页 PDF] {result.task.name}"
+    content = f"任务：{result.task.name}\n来源：{result.task.url}\n"
+    run_url = github_run_url()
+    if attach_pdf:
+        content += "PDF 已作为附件发送。\n"
+    else:
+        content += f"PDF 附件发送失败，请从运行结果页下载：{run_url}\n"
+    message.set_content(content)
+    if attach_pdf:
+        with result.pdf_path.open("rb") as file:
+            message.add_attachment(
+                file.read(), maintype="application", subtype="pdf", filename=result.pdf_path.name
+            )
+    return message
+
+
+def send_qq_email(result: CaptureResult) -> None:
+    username = os.environ["QQ_SMTP_USERNAME"]
+    auth_code = os.environ["QQ_SMTP_AUTH_CODE"]
+    recipients = [
+        item.strip() for item in re.split(r"[,;]", os.environ["QQ_EMAIL_TO"]) if item.strip()
+    ]
+    if not recipients:
+        raise RuntimeError("QQ_EMAIL_TO 没有有效收件地址")
+    try:
+        smtp_send(build_email(result, username, recipients, True), username, auth_code)
+        logging.info("QQ 邮件 PDF 附件已发送")
+    except Exception as exc:
+        run_url = github_run_url()
+        if not run_url:
+            raise RuntimeError(f"QQ 邮件附件发送失败：{type(exc).__name__}") from None
+        logging.warning("QQ 邮件附件发送失败，改发 Artifact 下载通知")
+        try:
+            smtp_send(build_email(result, username, recipients, False), username, auth_code)
+        except Exception as fallback_exc:
+            raise RuntimeError(f"QQ 邮件发送失败：{type(fallback_exc).__name__}") from None
+        logging.info("QQ 邮件下载通知已发送")
+
+
+def wecom_request(url: str, **kwargs: Any) -> dict[str, Any]:
+    try:
+        response = requests.post(url, timeout=60, **kwargs)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"企业微信网络请求失败：{type(exc).__name__}") from None
+    try:
+        payload = response.json()
+    except ValueError:
+        raise RuntimeError(f"企业微信返回 HTTP {response.status_code}") from None
+    if response.status_code != 200 or payload.get("errcode") != 0:
+        detail = str(payload.get("errmsg") or f"HTTP {response.status_code}")[:200]
+        raise RuntimeError(f"企业微信接口错误：{detail}")
+    return payload
+
+
+def send_wecom_text(key: str, result: CaptureResult) -> None:
+    run_url = github_run_url()
+    target = f"[查看运行结果并下载 Artifact]({run_url})" if run_url else "请在输出目录取 PDF"
+    content = f"**网页 PDF 已生成**\n任务：{result.task.name}\n文件直发失败，{target}"
+    payload = {"msgtype": "markdown", "markdown": {"content": content}}
+    wecom_request("https://qyapi.weixin.qq.com/cgi-bin/webhook/send", params={"key": key}, json=payload)
+
+
+def send_wecom_pdf(result: CaptureResult) -> None:
+    key = os.environ["WECOM_WEBHOOK_KEY"]
+    upload_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media"
+    try:
+        with result.pdf_path.open("rb") as file:
+            payload = wecom_request(
+                upload_url,
+                params={"key": key, "type": "file"},
+                files={"media": (result.pdf_path.name, file, "application/pdf")},
+            )
+        media_id = payload.get("media_id")
+        if not media_id:
+            raise RuntimeError("企业微信未返回 media_id")
+        wecom_request(
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send",
+            params={"key": key},
+            json={"msgtype": "file", "file": {"media_id": media_id}},
+        )
+        logging.info("企业微信 PDF 文件已发送")
+    except RuntimeError as exc:
+        logging.warning("企业微信文件直发失败（%s），改发下载通知", exc)
+        send_wecom_text(key, result)
+        logging.info("企业微信下载通知已发送")
+
+
+def deliver_pdf(result: CaptureResult) -> list[str]:
+    errors = []
+    email_variables = ("QQ_SMTP_USERNAME", "QQ_SMTP_AUTH_CODE", "QQ_EMAIL_TO")
+    configured_email = [name for name in email_variables if os.getenv(name)]
+    if configured_email:
+        if len(configured_email) != len(email_variables):
+            errors.append("QQ 邮件 Secrets 配置不完整")
+        else:
+            try:
+                send_qq_email(result)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+    if os.getenv("WECOM_WEBHOOK_KEY"):
+        try:
+            send_wecom_pdf(result)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+    if not configured_email and not os.getenv("WECOM_WEBHOOK_KEY"):
+        logging.info("未配置推送 Secrets，仅保留 PDF 文件")
+    return errors
+
+
+async def async_main() -> int:
+    parser = argparse.ArgumentParser(description="完整保存网页为 PDF，并通过 QQ 邮件和企业微信推送")
+    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("tasks.json"))
+    parser.add_argument("--output-dir", type=Path, default=Path(__file__).with_name("output"))
+    parser.add_argument("--manual-tasks", default=os.getenv("MANUAL_TASKS", ""))
+    parser.add_argument("--no-push", action="store_true", help="只生成 PDF，不发送消息")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    tasks = parse_manual_tasks(args.manual_tasks) if args.manual_tasks.strip() else load_tasks(args.config)
+    if not tasks:
+        raise ValueError("没有可执行的任务")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    failures = []
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True, args=["--disable-dev-shm-usage"])
+        try:
+            for task in tasks:
+                try:
+                    result = await capture_pdf(browser, task, args.output_dir)
+                    if not args.no_push:
+                        failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result))
+                except Exception as exc:
+                    logging.exception("任务失败：%s", task.name)
+                    failures.append(f"{task.name}：{type(exc).__name__}: {exc}")
+        finally:
+            await browser.close()
+
+    if failures:
+        logging.error("执行完成，但有失败项：\n%s", "\n".join(failures))
+        return 1
+    logging.info("全部任务执行完成")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(asyncio.run(async_main()))
+    except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
+        logging.error("启动失败：%s", exc)
+        sys.exit(2)
