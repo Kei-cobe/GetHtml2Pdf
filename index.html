@@ -41,21 +41,22 @@
   .ok-text { color: var(--ok); }
   .err-text { color: var(--danger); }
   details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
-  .run-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
-  .run-card { border: 2px solid var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; background: #fafbfc; transition: all .12s; position: relative; -webkit-user-select: none; user-select: none; }
+  .run-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .run-card { border: 2px solid var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; background: #fafbfc; transition: all .12s; position: relative; -webkit-user-select: none; user-select: none; overflow: hidden; }
   .run-card:active { transform: scale(.98); }
   .run-card.sel { border-color: var(--primary); background: #eef2ff; }
   .run-card .tick { position: absolute; top: 8px; right: 10px; width: 20px; height: 20px; border-radius: 50%; background: var(--primary); color: #fff; font-size: 13px; font-weight: 700; display: none; align-items: center; justify-content: center; }
   .run-card.sel .tick { display: flex; }
-  .run-card .rn { font-weight: 600; font-size: 15px; padding-right: 26px; }
-  .run-card .ru { font-size: 12px; color: var(--muted); margin-top: 4px; word-break: break-all; }
+  .run-card .rn { font-weight: 600; font-size: 15px; padding-right: 26px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-card .ru { font-size: 12px; color: var(--muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fold { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 4px; }
   .fold-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; cursor: pointer; background: #f6f8fa; font-size: 14px; font-weight: 600; -webkit-user-select: none; user-select: none; }
   .fold-head:active { background: #eef0f3; }
-  .fold-arrow { font-size: 13px; font-weight: 500; color: var(--primary); transition: transform .15s; }
+  .fold-arrow { font-size: 13px; font-weight: 500; color: var(--primary); display: inline-flex; align-items: center; gap: 4px; }
+  .fold-ico { display: inline-block; transition: transform .15s; }
   .fold-body { padding: 10px; }
   .fold.collapsed .fold-body { display: none; }
-  .fold.collapsed .fold-arrow { transform: rotate(-90deg); }
+  .fold.collapsed .fold-ico { transform: rotate(-90deg); }
 </style>
 </head>
 <body>
@@ -198,20 +199,25 @@ let currentSha = null;
 let tasks = [];
 let selected = new Set();
 let tasksCollapsed = true;
-let runCollapsed = true;
 
 function taskKey(t) { return (t.name || '') + '||' + (t.url || ''); }
 function foldHtml(scope, count, label, bodyHtml, collapsed) {
-  const arrow = collapsed ? '▸ 展开' : '▾ 收起';
+  const word = collapsed ? '展开' : '收起';
   return `<div class="fold ${collapsed ? 'collapsed' : ''}" data-fold="${scope}">
     <div class="fold-head" data-fold-toggle>
       <span>${label}（共 ${count} 个）</span>
-      <span class="fold-arrow">${arrow}</span>
+      <span class="fold-arrow"><span class="fold-ico">▾</span><span class="fold-txt">${word}</span></span>
     </div>
     <div class="fold-body">${bodyHtml}</div>
   </div>`;
 }
-function updateSelCount() { const el = $('selCount'); if (el) el.textContent = selected.size; }
+function updateSelCount() {
+  const el = $('selCount'); if (el) el.textContent = selected.size;
+  const btn = $('selectAll'); if (!btn) return;
+  const availKeys = tasks.filter(t => t.enabled !== false).map(taskKey);
+  const selAvail = availKeys.filter(k => selected.has(k)).length;
+  btn.textContent = (availKeys.length > 0 && selAvail === availKeys.length) ? '取消全选' : '全选';
+}
 function renderRunCards() {
   const box = $('runCards');
   const avail = tasks.map((t, i) => ({ t, i })).filter(x => x.t.enabled !== false);
@@ -224,14 +230,11 @@ function renderRunCards() {
       <div class="ru">${esc(t.url)}</div>
     </div>`;
   }).join('') + '</div>';
-  box.innerHTML = avail.length >= 2 ? foldHtml('run', avail.length, '可选任务', inner, runCollapsed) : inner;
+  box.innerHTML = inner;
   box.querySelectorAll('.run-card').forEach(c => c.addEventListener('click', () => {
     const k = c.dataset.key;
     if (selected.has(k)) selected.delete(k); else selected.add(k);
     renderRunCards();
-  }));
-  box.querySelectorAll('[data-fold-toggle]').forEach(h => h.addEventListener('click', () => {
-    runCollapsed = !runCollapsed; renderRunCards();
   }));
   updateSelCount();
 }
@@ -322,7 +325,13 @@ $('runSelected').onclick = () => {
   if (!parts.length) { log('选中的任务已失效，请重新选择', 'err-text'); return; }
   dispatch(parts.join('; '));
 };
-$('selectAll').onclick = () => { tasks.forEach(t => { if (t.enabled !== false) selected.add(taskKey(t)); }); renderRunCards(); };
+$('selectAll').onclick = () => {
+  const avail = tasks.filter(t => t.enabled !== false);
+  const allSelected = avail.length > 0 && avail.every(t => selected.has(taskKey(t)));
+  if (allSelected) avail.forEach(t => selected.delete(taskKey(t)));
+  else avail.forEach(t => selected.add(taskKey(t)));
+  renderRunCards();
+};
 $('selectNone').onclick = () => { selected.clear(); renderRunCards(); };
 
 $('saveSet').onclick = saveCfg;
