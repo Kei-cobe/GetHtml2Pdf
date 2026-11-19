@@ -1,7 +1,7 @@
 {
   "tasks": [
     {
-      "name": "资料 4",
+      "name": "澳门凤凰天机",
       "url": "https://fenghuangtianji-jiulianjie4.lkhjgfd.app/#4",
       "frame_selector": "iframe[src*='yjjy/ziliao.html']",
       "enabled": true
