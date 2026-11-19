@@ -57,6 +57,20 @@
   .fold-body { padding: 10px; }
   .fold.collapsed .fold-body { display: none; }
   .fold.collapsed .fold-ico { transform: rotate(-90deg); }
+  .card h2 { flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+  .chip.idle { background: #e6f4ea; color: var(--ok); }
+  .chip.busy { background: #fff4e5; color: #b25e09; }
+  .status-list { display: flex; flex-direction: column; gap: 6px; }
+  .status-row { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: #fafbfc; font-size: 13px; }
+  .status-row .st-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status-row .st-time { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+  .st-ico { flex: 0 0 16px; text-align: center; font-size: 14px; }
+  .spinner { flex: 0 0 15px; width: 15px; height: 15px; border: 2px solid #cfd6e4; border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(16px); max-width: 88vw; padding: 11px 18px; border-radius: 10px; background: rgba(31,35,40,.95); color: #fff; font-size: 14px; font-weight: 600; text-align: center; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 99; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { background: rgba(193,32,45,.96); }
 </style>
 </head>
 <body>
@@ -114,7 +128,7 @@
   </div>
 
   <div class="card">
-    <h2>🚀 立即执行</h2>
+    <h2>🚀 立即执行 <span id="runStatus" class="chip idle">✔ 当前无任务正在执行</span></h2>
     <div id="runCards">
       <p class="hint">点上方「从仓库读取」加载任务卡片，或先在「定时任务」里添加并保存。</p>
     </div>
@@ -128,9 +142,16 @@
   </div>
 
   <div class="card">
+    <h2>📊 今日任务状态</h2>
+    <div id="statusList"><p class="hint">暂无今日任务记录</p></div>
+  </div>
+
+  <div class="card">
     <h2>📜 日志</h2>
     <div id="log">就绪。</div>
   </div>
+
+  <div id="toast"></div>
 </div>
 
 <script>
@@ -265,7 +286,7 @@ function renderTasks() {
   }));
   renderRunCards();
 }
-function esc(s) { return String(s).replace(/"/g, '&quot;'); }
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 function onEdit(e) {
   const i = +e.target.dataset.i, k = e.target.dataset.k;
   if (k === 'enabled') tasks[i][k] = e.target.checked;
@@ -306,24 +327,162 @@ $('saveTasks').onclick = async () => {
   } catch (e) { log(e.message, 'err-text'); }
 };
 
-async function dispatch(manual) {
-  try {
-    const { workflow } = cfg();
-    const body = { ref: 'main', inputs: { tasks: manual || '' } };
-    await gh('POST', `/actions/workflows/${workflow}/dispatches`, body);
-    log(manual ? '已触发：执行临时任务' : '已触发：执行保存的任务', 'ok-text');
-  } catch (e) { log(e.message, 'err-text'); }
+// ===== 任务状态（读取 GitHub Actions 运行记录）=====
+let runRecords = [];        // 本机下发记录 [{id,label,count,ts}]
+let apiRuns = [];           // 今日该工作流的运行列表
+let pendingDispatch = null;
+let pollTimer = null;
+const ACTIVE_STATES = new Set(['queued', 'in_progress', 'waiting', 'requested', 'pending']);
+
+function isToday(value) { return new Date(value).toDateString() === new Date().toDateString(); }
+function loadRecords() {
+  try { runRecords = JSON.parse(LS.get('runs') || '[]'); } catch (e) { runRecords = []; }
+  runRecords = runRecords.filter(r => isToday(r.ts));
 }
-$('runAll').onclick = () => dispatch('');
+function saveRecords() { LS.set('runs', JSON.stringify(runRecords.slice(-60))); }
+
+function toast(msg, isErr) {
+  const el = $('toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = isErr ? 'show err' : 'show';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = ''; }, 2600);
+}
+
+async function fetchRuns() {
+  const data = await gh('GET', `/actions/workflows/${cfg().workflow}/runs?per_page=50`);
+  apiRuns = (data.workflow_runs || []).filter(r => isToday(r.created_at));
+  return apiRuns;
+}
+
+function mergedRows() {
+  const localById = {};
+  runRecords.forEach(r => { localById[r.id] = r; });
+  const enabledCount = Math.max(1, tasks.filter(t => t.enabled !== false).length);
+  const rows = apiRuns.map(r => {
+    const rec = localById[r.id];
+    return {
+      id: r.id,
+      label: rec ? rec.label : (r.event === 'schedule' ? '定时任务（自动）' : '手动任务'),
+      count: rec ? rec.count : (r.event === 'schedule' ? enabledCount : 1),
+      status: r.status,
+      conclusion: r.conclusion,
+      ts: rec ? rec.ts : new Date(r.created_at).getTime(),
+    };
+  });
+  const apiIds = new Set(apiRuns.map(r => r.id));
+  runRecords.forEach(r => { if (!apiIds.has(r.id)) rows.push({ ...r, status: 'queued', conclusion: null }); });
+  rows.sort((a, b) => b.ts - a.ts);
+  return rows;
+}
+
+function renderRunStatus() {
+  const rows = mergedRows();
+  const active = rows.filter(r => ACTIVE_STATES.has(r.status));
+  const chip = $('runStatus');
+  if (chip) {
+    if (active.length) {
+      const total = active.reduce((sum, r) => sum + (r.count || 1), 0);
+      chip.className = 'chip busy';
+      chip.textContent = `⚠️ 当前正在执行 ${total} 个任务`;
+    } else {
+      chip.className = 'chip idle';
+      chip.textContent = '✔ 当前无任务正在执行';
+    }
+  }
+  const box = $('statusList');
+  if (!box) return;
+  if (!rows.length) { box.innerHTML = '<p class="hint">暂无今日任务记录</p>'; return; }
+  box.innerHTML = '<div class="status-list">' + rows.map(r => {
+    let icon;
+    if (ACTIVE_STATES.has(r.status)) icon = '<span class="spinner"></span>';
+    else if (r.conclusion === 'success') icon = '<span class="st-ico">✔</span>';
+    else if (r.conclusion === 'cancelled') icon = '<span class="st-ico">⏹</span>';
+    else icon = '<span class="st-ico">❌</span>';
+    const time = new Date(r.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    return `<div class="status-row">${icon}<span class="st-label">${esc(r.label)}</span><span class="st-time">${time}</span></div>`;
+  }).join('') + '</div>';
+}
+
+async function pollStatus() {
+  if (!LS.get('token')) return;
+  try { await fetchRuns(); renderRunStatus(); } catch (e) { /* 静默失败，不影响使用 */ }
+}
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') pollStatus();
+  }, 15000);
+}
+
+async function recordLatestRun() {
+  if (!pendingDispatch) return;
+  try {
+    const data = await gh('GET', `/actions/workflows/${cfg().workflow}/runs?per_page=5`);
+    const known = new Set(runRecords.map(r => r.id));
+    const fresh = (data.workflow_runs || []).filter(r =>
+      !known.has(r.id) && Date.now() - new Date(r.created_at).getTime() < 180000
+    );
+    if (fresh.length) {
+      runRecords.push({ id: fresh[0].id, label: pendingDispatch.label, count: pendingDispatch.count, ts: Date.now() });
+      saveRecords();
+      pendingDispatch = null;
+      await pollStatus();
+    } else if (pendingDispatch.tries < 4) {
+      pendingDispatch.tries += 1;
+      setTimeout(recordLatestRun, 4000);
+    }
+  } catch (e) { /* 静默 */ }
+}
+
+async function dispatch(manual, meta) {
+  const key = manual || '__ALL__';
+  const now = Date.now();
+  let sent = [];
+  try { sent = JSON.parse(LS.get('dispatches') || '[]'); } catch (e) { sent = []; }
+  sent = sent.filter(d => now - d.ts < 300000);
+  if (sent.some(d => d.key === key)) {
+    toast('5 分钟内已有相同任务执行过', true);
+    log('已阻止：5 分钟内已有相同任务执行过', 'err-text');
+    return false;
+  }
+  const label = (meta && meta.label) || (manual
+    ? manual.split(';').map(s => s.split('|')[0].trim()).filter(Boolean).join(' | ')
+    : '全部定时任务');
+  const count = (meta && meta.count) || 1;
+  try {
+    await gh('POST', `/actions/workflows/${cfg().workflow}/dispatches`, { ref: 'main', inputs: { tasks: manual || '' } });
+    sent.push({ key, ts: now });
+    LS.set('dispatches', JSON.stringify(sent));
+    toast('✓ 已下发任务');
+    log('已下发任务：' + label, 'ok-text');
+    pendingDispatch = { label, count, tries: 0 };
+    startPolling();
+    setTimeout(recordLatestRun, 3000);
+    return true;
+  } catch (e) { toast(e.message, true); log(e.message, 'err-text'); return false; }
+}
+
+$('runAll').onclick = () => {
+  const enabled = tasks.filter(t => t.enabled !== false);
+  dispatch('', {
+    label: enabled.length ? enabled.map(t => t.name || '未命名').join(' | ') : '全部定时任务',
+    count: Math.max(1, enabled.length),
+  });
+};
 $('runSelected').onclick = () => {
   if (!selected.size) { log('请先点击选中要执行的任务', 'err-text'); return; }
-  const parts = [];
+  const chosen = [];
   for (const k of selected) {
     const t = tasks.find(x => taskKey(x) === k);
-    if (t) parts.push(t.name + ' | ' + t.url);
+    if (t) chosen.push(t);
   }
-  if (!parts.length) { log('选中的任务已失效，请重新选择', 'err-text'); return; }
-  dispatch(parts.join('; '));
+  if (!chosen.length) { log('选中的任务已失效，请重新选择', 'err-text'); return; }
+  dispatch(chosen.map(t => t.name + ' | ' + t.url).join('; '), {
+    label: chosen.map(t => t.name || '未命名').join(' | '),
+    count: chosen.length,
+  });
 };
 $('selectAll').onclick = () => {
   const avail = tasks.filter(t => t.enabled !== false);
@@ -412,7 +571,13 @@ $('saveSched').onclick = async () => {
 };
 
 loadCfg();
-if (LS.get('token')) { loadTasksData().catch(() => {}); loadSchedule().catch(() => {}); }
+loadRecords();
+if (LS.get('token')) {
+  loadTasksData().catch(() => {});
+  loadSchedule().catch(() => {});
+  pollStatus();
+  startPolling();
+}
 </script>
 </body>
 </html>

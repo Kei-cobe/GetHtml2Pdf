@@ -9,6 +9,7 @@ import os
 import re
 import smtplib
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
@@ -278,6 +279,7 @@ async def capture_pdf(browser: Any, task: Task, output_dir: Path) -> CaptureResu
         viewport={"width": 1440, "height": 1000},
         locale="zh-CN",
         timezone_id="Asia/Shanghai",
+        ignore_https_errors=True,
     )
     try:
         page = await context.new_page()
@@ -326,6 +328,29 @@ def smtp_send(message: EmailMessage, username: str, auth_code: str) -> None:
         smtp.send_message(message)
 
 
+def smtp_send_with_retry(
+    message: EmailMessage, username: str, auth_code: str, attempts: int = 3
+) -> None:
+    last_error: Exception | None = None
+    for index in range(attempts):
+        try:
+            smtp_send(message, username, auth_code)
+            return
+        except smtplib.SMTPRecipientsRefused as exc:
+            details = []
+            for address, error in exc.recipients.items():
+                reason = error[1]
+                if isinstance(reason, bytes):
+                    reason = reason.decode("utf-8", "replace")
+                details.append(f"{address}: {reason}")
+            raise RuntimeError("收件地址被拒绝（" + "; ".join(details) + "）") from None
+        except (smtplib.SMTPException, OSError) as exc:
+            last_error = exc
+            if index + 1 < attempts:
+                time.sleep(5 * (index + 1))
+    raise RuntimeError(f"邮件发送失败：{type(last_error).__name__}: {last_error}") from None
+
+
 def build_email(result: CaptureResult, sender: str, recipients: list[str], attach_pdf: bool) -> EmailMessage:
     message = EmailMessage()
     message["From"] = sender
@@ -356,17 +381,14 @@ def send_qq_email(result: CaptureResult) -> None:
     if not recipients:
         raise RuntimeError("QQ_EMAIL_TO 没有有效收件地址")
     try:
-        smtp_send(build_email(result, username, recipients, True), username, auth_code)
+        smtp_send_with_retry(build_email(result, username, recipients, True), username, auth_code)
         logging.info("QQ 邮件 PDF 附件已发送")
-    except Exception as exc:
+    except RuntimeError as exc:
         run_url = github_run_url()
         if not run_url:
-            raise RuntimeError(f"QQ 邮件附件发送失败：{type(exc).__name__}") from None
-        logging.warning("QQ 邮件附件发送失败，改发 Artifact 下载通知")
-        try:
-            smtp_send(build_email(result, username, recipients, False), username, auth_code)
-        except Exception as fallback_exc:
-            raise RuntimeError(f"QQ 邮件发送失败：{type(fallback_exc).__name__}") from None
+            raise RuntimeError(f"QQ 邮件附件发送失败：{exc}") from None
+        logging.warning("QQ 邮件附件发送失败（%s），改发 Artifact 下载通知", exc)
+        smtp_send_with_retry(build_email(result, username, recipients, False), username, auth_code)
         logging.info("QQ 邮件下载通知已发送")
 
 
@@ -538,12 +560,14 @@ async def async_main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     failures = []
+    pdf_count = 0
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True, args=["--disable-dev-shm-usage"])
         try:
             for task in tasks:
                 try:
                     result = await capture_pdf(browser, task, args.output_dir)
+                    pdf_count += 1
                     if not args.no_push:
                         failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result))
                 except Exception as exc:
@@ -552,10 +576,17 @@ async def async_main() -> int:
         finally:
             await browser.close()
 
-    if failures:
-        logging.error("执行完成，但有失败项：\n%s", "\n".join(failures))
+    if failures and pdf_count == 0:
+        logging.error("全部任务均失败：\n%s", "\n".join(failures))
         return 1
-    logging.info("全部任务执行完成")
+    if failures:
+        logging.warning(
+            "已完成 %d 个 PDF，以下项目未成功（不影响本次结果）：\n%s",
+            pdf_count,
+            "\n".join(failures),
+        )
+        return 0
+    logging.info("全部任务执行完成，共 %d 个 PDF", pdf_count)
     return 0
 
 
