@@ -66,25 +66,31 @@ def validate_http_url(value: str) -> str:
     return url
 
 
-def parse_manual_tasks(value: str) -> list[Task]:
-    entries = [item.strip() for item in re.split(r"[;\n]+", value) if item.strip()]
+def parse_manual_tasks(value: str, saved_tasks: list[Task] | None = None) -> list[Task]:
+    entries = [item.strip() for item in re.split(r"[;，,\n]+", value) if item.strip()]
     tasks = []
     for index, entry in enumerate(entries):
         if "|" in entry:
             name, url = entry.split("|", 1)
             task = Task.from_mapping({"name": name.strip(), "url": url.strip()}, index)
-        else:
+        elif re.match(r"^https?://", entry, re.I):
             task = Task.from_mapping({"name": f"手动任务 {index + 1}", "url": entry}, index)
+        else:
+            name = entry.strip()
+            match = next((t for t in (saved_tasks or []) if t.name.strip() == name), None)
+            if not match:
+                raise ValueError(f"未找到备注名为「{name}」的任务，请先在定时任务里添加")
+            task = match
         tasks.append(task)
     return tasks
 
 
-def load_tasks(path: Path) -> list[Task]:
+def load_tasks(path: Path, only_enabled: bool = True) -> list[Task]:
     with path.open(encoding="utf-8") as file:
         config = json.load(file)
     tasks = []
     for index, item in enumerate(config.get("tasks", [])):
-        if item.get("enabled", True):
+        if not only_enabled or item.get("enabled", True):
             tasks.append(Task.from_mapping(item, index))
     return tasks
 
@@ -522,7 +528,11 @@ async def async_main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    tasks = parse_manual_tasks(args.manual_tasks) if args.manual_tasks.strip() else load_tasks(args.config)
+    if args.manual_tasks.strip():
+        all_saved = load_tasks(args.config, only_enabled=False)
+        tasks = parse_manual_tasks(args.manual_tasks, all_saved)
+    else:
+        tasks = load_tasks(args.config)
     if not tasks:
         raise ValueError("没有可执行的任务")
     args.output_dir.mkdir(parents=True, exist_ok=True)

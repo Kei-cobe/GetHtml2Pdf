@@ -30,6 +30,18 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(tasks[0].url, "https://example.com/page#4")
         self.assertEqual(tasks[2].url, "https://example.com/page#6")
 
+    def test_parse_manual_tasks_lookup_by_name(self):
+        saved = [Task("资料 4", "https://a.example.com"), Task("资料 6", "https://b.example.com")]
+        tasks = parse_manual_tasks("资料 4，资料 6", saved)
+        self.assertEqual([task.name for task in tasks], ["资料 4", "资料 6"])
+        self.assertEqual(tasks[0].url, "https://a.example.com")
+        self.assertEqual(tasks[1].url, "https://b.example.com")
+
+    def test_parse_manual_tasks_unknown_name_raises(self):
+        saved = [Task("资料 4", "https://a.example.com")]
+        with self.assertRaises(ValueError):
+            parse_manual_tasks("不存在的任务", saved)
+
     def test_empty_manual_input(self):
         self.assertEqual(parse_manual_tasks(" ; \n"), [])
 

@@ -84,14 +84,28 @@
   </div>
 
   <div class="card">
+    <h2>⏰ 定时设置（北京时间）</h2>
+    <div id="schedules"><p class="hint">点「读取定时」加载当前设置</p></div>
+    <div class="row" style="margin-top:8px;">
+      <input type="time" id="newTime" value="17:00">
+      <button id="addTime" class="ghost" style="flex:0 0 auto;width:auto;">添加</button>
+    </div>
+    <div class="btn-row">
+      <button id="loadSched" class="ghost">读取定时</button>
+      <button id="saveSched">保存到仓库</button>
+    </div>
+    <p class="hint">按北京时间设置，会自动换算成 UTC 写入工作流。保存后约 1 分钟生效。</p>
+  </div>
+
+  <div class="card">
     <h2>🚀 立即执行</h2>
-    <label>临时任务（可选，留空则执行上面保存的定时任务）</label>
-    <textarea id="manual" placeholder="资料 4 | https://xxx.com/page#4; 资料 6 | https://xxx.com/page#6"></textarea>
+    <label>临时任务（填备注名，多个用中文逗号「，」分开；留空则执行全部保存的任务）</label>
+    <textarea id="manual" placeholder="资料 4，资料 6"></textarea>
     <div class="btn-row">
       <button id="runSaved">执行保存的任务</button>
       <button id="runManual" class="ok">执行临时任务</button>
     </div>
-    <p class="hint">执行后去 GitHub → Actions 查看进度，PDF 会推送到你的邮箱 / 企业微信 / 微信。</p>
+    <p class="hint">备注名需先在上方「定时任务」里添加过，会自动匹配网址。执行后去 GitHub → Actions 查看进度。</p>
   </div>
 
   <div class="card">
@@ -196,15 +210,17 @@ function onEdit(e) {
 
 $('addTask').onclick = () => { tasks.push({ name: '新任务', url: '', frame_selector: '', enabled: true }); renderTasks(); };
 
+async function loadTasksData() {
+  const data = await gh('GET', '/contents/tasks.json');
+  currentSha = data.sha;
+  const parsed = JSON.parse(b64decodeUnicode(data.content));
+  tasks = (parsed.tasks || []).map(t => ({ name: t.name || '', url: t.url || '', frame_selector: t.frame_selector || '', enabled: t.enabled !== false }));
+  renderTasks();
+  return tasks;
+}
 $('loadTasks').onclick = async () => {
-  try {
-    const data = await gh('GET', '/contents/tasks.json');
-    currentSha = data.sha;
-    const parsed = JSON.parse(b64decodeUnicode(data.content));
-    tasks = (parsed.tasks || []).map(t => ({ name: t.name || '', url: t.url || '', frame_selector: t.frame_selector || '', enabled: t.enabled !== false }));
-    renderTasks();
-    log('已从仓库读取 ' + tasks.length + ' 个任务', 'ok-text');
-  } catch (e) { log(e.message, 'err-text'); }
+  try { await loadTasksData(); log('已从仓库读取 ' + tasks.length + ' 个任务', 'ok-text'); }
+  catch (e) { log(e.message, 'err-text'); }
 };
 
 $('saveTasks').onclick = async () => {
@@ -234,7 +250,25 @@ async function dispatch(manual) {
   } catch (e) { log(e.message, 'err-text'); }
 }
 $('runSaved').onclick = () => dispatch('');
-$('runManual').onclick = () => dispatch($('manual').value.trim());
+$('runManual').onclick = async () => {
+  const raw = $('manual').value.trim();
+  if (!raw) { dispatch(''); return; }
+  try {
+    if (!tasks.length) await loadTasksData();
+    const entries = raw.split(/[;，,\n]+/).map(s => s.trim()).filter(Boolean);
+    const parts = [];
+    const missing = [];
+    for (const name of entries) {
+      if (name.includes('|') || /^https?:\/\//i.test(name)) { parts.push(name); continue; }
+      const t = tasks.find(x => (x.name || '').trim() === name);
+      if (t) parts.push(t.name + ' | ' + t.url);
+      else missing.push(name);
+    }
+    if (missing.length) log('未找到这些备注名，已跳过：' + missing.join('、'), 'err-text');
+    if (!parts.length) { log('没有可执行的任务', 'err-text'); return; }
+    dispatch(parts.join('; '));
+  } catch (e) { log(e.message, 'err-text'); }
+};
 
 $('saveSet').onclick = saveCfg;
 $('clearSet').onclick = () => { ['token','owner','repo','workflow'].forEach(k => LS.del(k)); $('token').value=''; log('已清除本机设置'); };
@@ -243,7 +277,78 @@ $('testConn').onclick = async () => {
   catch (e) { log(e.message, 'err-text'); }
 };
 
+// ===== 定时设置（北京时间 ↔ UTC cron）=====
+let schedules = [];
+let workflowSha = null;
+
+function renderSchedules() {
+  const box = $('schedules');
+  if (!schedules.length) { box.innerHTML = '<p class="hint">暂无定时（仅手动触发）</p>'; return; }
+  box.innerHTML = schedules.map((t, i) => `
+    <div class="task" style="display:flex;align-items:center;gap:8px;">
+      <span style="flex:1;font-weight:600;">🕐 ${t}</span>
+      <button class="del" data-delsched="${i}">删</button>
+    </div>
+  `).join('');
+  box.querySelectorAll('button[data-delsched]').forEach(b => b.addEventListener('click', () => {
+    schedules.splice(+b.dataset.delsched, 1); renderSchedules();
+  }));
+}
+function cronToBeijing(cron) {
+  const p = cron.trim().split(/\s+/);
+  const mins = p[0].split(','), hours = p[1].split(',');
+  const out = [];
+  for (const h of hours) for (const m of mins) {
+    out.push(String((parseInt(h, 10) + 8) % 24).padStart(2, '0') + ':' + String(parseInt(m, 10)).padStart(2, '0'));
+  }
+  return out;
+}
+function beijingToCron(hhmm) {
+  const [h, m] = hhmm.split(':').map(n => parseInt(n, 10));
+  return m + ' ' + ((h - 8 + 24) % 24) + ' * * *';
+}
+async function loadSchedule() {
+  const { workflow } = cfg();
+  const data = await gh('GET', '/contents/.github/workflows/' + workflow);
+  workflowSha = data.sha;
+  const yaml = b64decodeUnicode(data.content);
+  const crons = [...yaml.matchAll(/- cron:\s*"([^"]*)"/g)].map(m => m[1]);
+  schedules = [];
+  for (const c of crons) schedules.push(...cronToBeijing(c));
+  schedules.sort();
+  renderSchedules();
+  return schedules;
+}
+$('loadSched').onclick = async () => {
+  try { await loadSchedule(); log('已读取定时：' + (schedules.length ? schedules.join('、') : '无'), 'ok-text'); }
+  catch (e) { log(e.message, 'err-text'); }
+};
+$('addTime').onclick = () => {
+  const v = $('newTime').value;
+  if (!v) return;
+  if (schedules.includes(v)) { log('该时间已存在', 'err-text'); return; }
+  schedules.push(v); schedules.sort(); renderSchedules();
+};
+$('saveSched').onclick = async () => {
+  try {
+    const { workflow } = cfg();
+    const data = await gh('GET', '/contents/.github/workflows/' + workflow);
+    workflowSha = data.sha;
+    let yaml = b64decodeUnicode(data.content);
+    const cronLines = schedules.map(beijingToCron);
+    let block = '  schedule:\n';
+    block += '    # GitHub 使用 UTC：以下时间已由控制台按北京时间自动换算。\n';
+    block += cronLines.map(c => '    - cron: "' + c + '"\n').join('');
+    if (!cronLines.length) block += '    # （无定时，仅手动触发）\n';
+    yaml = yaml.replace(/  schedule:\n(?:    .*\n)*/, block);
+    const content = b64encodeUnicode(yaml);
+    await gh('PUT', '/contents/.github/workflows/' + workflow, { message: '更新定时时间', content, sha: workflowSha });
+    log('定时已保存：' + (schedules.length ? schedules.join('、') : '无（仅手动）') + '，约 1 分钟后生效', 'ok-text');
+  } catch (e) { log(e.message, 'err-text'); }
+};
+
 loadCfg();
+if (LS.get('token')) { loadTasksData().catch(() => {}); loadSchedule().catch(() => {}); }
 </script>
 </body>
 </html>
