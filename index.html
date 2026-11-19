@@ -373,14 +373,22 @@ function countFromText(text) {
   return Math.max(1, text.split(';').filter(s => s.trim()).length);
 }
 
+function countFromLabel(text) {
+  return Math.max(1, String(text || '').split('|').map(s => s.trim()).filter(Boolean).length);
+}
+
 function mergedRows() {
   const localById = {};
   runRecords.forEach(r => { localById[r.id] = r; });
   const sent = readDispatches();
   const enabledCount = Math.max(1, tasks.filter(t => t.enabled !== false).length);
+  const wfName = (cfg().workflow || '').replace(/\.ya?ml$/i, '');
   const rows = apiRuns.map(r => {
     const created = new Date(r.created_at).getTime();
     const rec = localById[r.id];
+    const title = String(r.display_title || '').trim();
+    const hasTitle = title && title !== '网页抓取并推送 PDF' && title !== wfName && title !== '手动任务';
+    if (hasTitle) return { id: r.id, label: title, count: countFromLabel(title), status: r.status, conclusion: r.conclusion, ts: created };
     if (rec) return { id: r.id, label: rec.label, count: rec.count, status: r.status, conclusion: r.conclusion, ts: rec.ts };
     const near = sent.find(d => Math.abs(d.ts - created) < 180000);
     if (near) return { id: r.id, label: labelFromText(near.key), count: countFromText(near.key), status: r.status, conclusion: r.conclusion, ts: created };
@@ -419,8 +427,11 @@ async function fetchReason(runId) {
       text = step ? step.name : '';
       try {
         const ann = await gh('GET', `/check-runs/${failed.id}/annotations`);
-        const hit = Array.isArray(ann) ? ann.find(a => a && a.message) : null;
-        if (hit) text = hit.message;
+        if (Array.isArray(ann) && ann.length) {
+          const noise = (a) => !a || !a.message || /deprecated|Node\.js|forced to run/i.test(a.message);
+          const hit = ann.find(a => !noise(a) && a.annotation_level === 'failure') || ann.find(a => !noise(a));
+          if (hit) text = hit.message;
+        }
       } catch (e) { /* 忽略 */ }
     }
   } catch (e) { text = ''; }
@@ -516,7 +527,7 @@ async function dispatch(manual, meta) {
     : '全部定时任务');
   const count = (meta && meta.count) || 1;
   try {
-    await gh('POST', `/actions/workflows/${cfg().workflow}/dispatches`, { ref: 'main', inputs: { tasks: manual || '' } });
+    await gh('POST', `/actions/workflows/${cfg().workflow}/dispatches`, { ref: 'main', inputs: { tasks: manual || '', label: label } });
     sent.push({ key, ts: now });
     LS.set('dispatches', JSON.stringify(sent.slice(-60)));
     toast('✓ 已下发任务');
