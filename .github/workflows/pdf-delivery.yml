@@ -1,0 +1,59 @@
+name: 网页抓取并推送 PDF
+
+on:
+  schedule:
+    # GitHub 使用 UTC：对应北京时间每天 17:00、19:00、21:00。
+    - cron: "0 9,11,13 * * *"
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: "格式：备注 | https://网址；多个任务用英文分号隔开。留空则执行 tasks.json"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webpage-pdf-delivery
+  cancel-in-progress: false
+
+jobs:
+  capture-and-deliver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 抓取并推送
+        env:
+          MANUAL_TASKS: ${{ inputs.tasks }}
+          QQ_SMTP_USERNAME: ${{ secrets.QQ_SMTP_USERNAME }}
+          QQ_SMTP_AUTH_CODE: ${{ secrets.QQ_SMTP_AUTH_CODE }}
+          QQ_EMAIL_TO: ${{ secrets.QQ_EMAIL_TO }}
+          WECOM_WEBHOOK_KEY: ${{ secrets.WECOM_WEBHOOK_KEY }}
+        run: python pdf_pusher.py --config tasks.json --output-dir output
+
+      - name: 备份 PDF 和运行产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webpage-pdf-${{ github.run_id }}
+          path: output/
+          if-no-files-found: ignore
+          retention-days: 14
