@@ -372,14 +372,30 @@ def build_email(result: CaptureResult, sender: str, recipients: list[str], attac
     return message
 
 
+EMAIL_PATTERN = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[A-Za-z]{2,}$")
+
+
+def parse_recipients(raw: str) -> list[str]:
+    """支持英文/中文逗号、分号、顿号、空格与空白分隔，并过滤非法地址。"""
+    parts = re.split(r"[,;，；、\s]+", raw)
+    valid: list[str] = []
+    invalid: list[str] = []
+    for part in parts:
+        candidate = part.strip().strip("<>").strip()
+        if not candidate:
+            continue
+        (valid if EMAIL_PATTERN.match(candidate) else invalid).append(candidate)
+    if invalid:
+        logging.warning("已忽略无效收件地址：%s", "、".join(invalid))
+    return valid
+
+
 def send_qq_email(result: CaptureResult) -> None:
     username = os.environ["QQ_SMTP_USERNAME"]
     auth_code = os.environ["QQ_SMTP_AUTH_CODE"]
-    recipients = [
-        item.strip() for item in re.split(r"[,;]", os.environ["QQ_EMAIL_TO"]) if item.strip()
-    ]
+    recipients = parse_recipients(os.environ["QQ_EMAIL_TO"])
     if not recipients:
-        raise RuntimeError("QQ_EMAIL_TO 没有有效收件地址")
+        raise RuntimeError("QQ_EMAIL_TO 没有有效收件地址，请填写形如 123456@qq.com 的地址")
     try:
         smtp_send_with_retry(build_email(result, username, recipients, True), username, auth_code)
         logging.info("QQ 邮件 PDF 附件已发送")
