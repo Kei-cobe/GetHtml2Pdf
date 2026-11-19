@@ -1,5 +1,5 @@
 {
   "email": false,
-  "wecom": true,
-  "pushplus": false
+  "wecom": false,
+  "pushplus": true
 }
