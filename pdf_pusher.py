@@ -132,7 +132,7 @@ async def navigate(page: Page, url: str) -> None:
 
 async def find_content_frame_url(page: Page, selector: str | None) -> str | None:
     if selector:
-        element = await page.wait_for_selector(selector, state="attached", timeout=15_000)
+        element = await page.wait_for_selector(selector, state="attached", timeout=30_000)
         if not element:
             raise RuntimeError(f"找不到主内容 iframe：{selector}")
         src = await element.get_attribute("src")
@@ -630,6 +630,7 @@ def humanize_failure(exc: BaseException) -> str:
     """把底层异常翻译成一句中文简短说明（用于控制台任务列表）。"""
     raw = f"{type(exc).__name__}: {exc}".lower()
     rules = [
+        ("waiting for selector", "未找到网页内容区域"),
         ("err_name_not_resolved", "网址域名无法解析"),
         ("err_connection_timed_out", "连接网站超时"),
         ("err_connection_refused", "网站拒绝连接"),
@@ -660,6 +661,18 @@ def humanize_failure(exc: BaseException) -> str:
     return "抓取时出现异常"
 
 
+async def capture_with_retry(browser: Any, task: Task, output_dir: Path) -> CaptureResult:
+    """单个任务失败后重试一次，降低偶发超时的影响。"""
+    try:
+        return await capture_pdf(browser, task, output_dir)
+    except Exception as exc:
+        logging.warning(
+            "任务「%s」首次失败（%s），10 秒后重试一次", task.name, humanize_failure(exc)
+        )
+        await asyncio.sleep(10)
+        return await capture_pdf(browser, task, output_dir)
+
+
 async def async_main() -> int:
     parser = argparse.ArgumentParser(description="完整保存网页为 PDF，并通过 QQ 邮件和企业微信推送")
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("tasks.json"))
@@ -686,7 +699,7 @@ async def async_main() -> int:
         try:
             for task in tasks:
                 try:
-                    result = await capture_pdf(browser, task, args.output_dir)
+                    result = await capture_with_retry(browser, task, args.output_dir)
                     pdf_count += 1
                     if not args.no_push:
                         failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result, channels))

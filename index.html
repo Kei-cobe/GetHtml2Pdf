@@ -66,6 +66,7 @@
   .status-row .st-main { flex: 1; min-width: 0; }
   .status-row .st-label { white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-err { margin-top: 3px; color: var(--danger); font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
+  .status-row .st-warn { margin-top: 3px; color: #b25e09; font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-time { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
   .chk-row { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 4px 0 6px; }
   .chk { display: flex; align-items: center; gap: 6px; font-weight: 600; margin: 0; }
@@ -368,8 +369,8 @@ async function fetchRuns() {
   return apiRuns;
 }
 
-let reasonCache = {};
-try { reasonCache = JSON.parse(LS.get('reasons') || '{}'); } catch (e) { reasonCache = {}; }
+let annCache = {};
+try { annCache = JSON.parse(LS.get('annots') || '{}'); } catch (e) { annCache = {}; }
 
 function readDispatches() {
   try { return JSON.parse(LS.get('dispatches') || '[]'); } catch (e) { return []; }
@@ -441,42 +442,47 @@ function zhReason(raw) {
 function failText(row) {
   if (row.status !== 'completed' || !row.conclusion || row.conclusion === 'success') return '';
   if (row.conclusion === 'cancelled') return '已取消';
-  const detail = zhReason(reasonCache[row.id] || '');
+  const detail = zhReason(((annCache[row.id] || [])[0]) || '');
   if (row.conclusion === 'timed_out') return '执行超时' + (detail ? '：' + detail : '');
   return '执行失败' + (detail ? '：' + detail : '');
 }
 
-async function fetchReason(runId) {
-  if (reasonCache[runId]) return reasonCache[runId];
-  let text = '';
+function warnText(row) {
+  if (row.status !== 'completed' || row.conclusion !== 'success') return '';
+  const msgs = annCache[row.id] || [];
+  if (!msgs.length) return '';
+  const names = msgs.map(m => String(m).split('：')[0].trim()).filter(Boolean);
+  return '部分任务失败：' + (names.length ? names.join('、') : msgs.length + ' 个任务');
+}
+
+async function fetchAnnotations(runId) {
+  if (annCache[runId]) return annCache[runId];
+  let msgs = [];
   try {
     const data = await gh('GET', `/actions/runs/${runId}/jobs`);
     const jobs = data.jobs || [];
-    const failed = jobs.find(j => j.conclusion && j.conclusion !== 'success') || jobs[0];
-    if (failed) {
-      const step = (failed.steps || []).find(s => s.conclusion && s.conclusion !== 'success');
-      text = step ? step.name : '';
+    const job = jobs.find(j => j.conclusion && j.conclusion !== 'success') || jobs[0];
+    if (job) {
+      const step = (job.steps || []).find(s => s.conclusion && s.conclusion !== 'success');
+      if (step && step.name) msgs = [step.name];
       try {
-        const ann = await gh('GET', `/check-runs/${failed.id}/annotations`);
-        if (Array.isArray(ann) && ann.length) {
-          const noise = (a) => !a || !a.message || /deprecated|Node\.js|forced to run/i.test(a.message);
-          const hit = ann.find(a => !noise(a) && a.annotation_level === 'failure') || ann.find(a => !noise(a));
-          if (hit) text = hit.message;
-        }
+        const ann = await gh('GET', `/check-runs/${job.id}/annotations`);
+        const noise = (a) => !a || !a.message || /deprecated|Node\.js|forced to run/i.test(a.message);
+        const fails = (Array.isArray(ann) ? ann : [])
+          .filter(a => !noise(a) && a.annotation_level === 'failure')
+          .map(a => a.message);
+        if (fails.length) msgs = fails;
       } catch (e) { /* 忽略 */ }
     }
-  } catch (e) { text = ''; }
-  text = (text || '').replace(/\s+/g, ' ').trim().slice(0, 140);
-  reasonCache[runId] = text;
-  LS.set('reasons', JSON.stringify(reasonCache));
-  return text;
+  } catch (e) { msgs = []; }
+  annCache[runId] = msgs.map(m => String(m).replace(/\s+/g, ' ').trim().slice(0, 140));
+  LS.set('annots', JSON.stringify(annCache));
+  return annCache[runId];
 }
 
-async function loadFailReasons(rows) {
-  const pending = rows.filter(r =>
-    r.status === 'completed' && r.conclusion && r.conclusion !== 'success' && r.conclusion !== 'cancelled' && !reasonCache[r.id]
-  ).slice(0, 3);
-  for (const row of pending) await fetchReason(row.id);
+async function loadRunAnnotations(rows) {
+  const pending = rows.filter(r => r.status === 'completed' && !annCache[r.id]).slice(0, 3);
+  for (const row of pending) await fetchAnnotations(row.id);
 }
 
 function renderRunStatus() {
@@ -505,7 +511,9 @@ function renderRunStatus() {
     const time = new Date(r.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     const reason = failText(r);
     const reasonHtml = reason ? `<div class="st-err">${esc(reason)}</div>` : '';
-    return `<div class="status-row">${icon}<div class="st-main"><div class="st-label">${esc(r.label)}</div>${reasonHtml}</div><span class="st-time">${time}</span></div>`;
+    const warn = warnText(r);
+    const warnHtml = warn ? `<div class="st-warn">${esc(warn)}</div>` : '';
+    return `<div class="status-row">${icon}<div class="st-main"><div class="st-label">${esc(r.label)}</div>${reasonHtml}${warnHtml}</div><span class="st-time">${time}</span></div>`;
   }).join('') + '</div>';
 }
 
@@ -513,7 +521,7 @@ async function pollStatus() {
   if (!LS.get('token')) return;
   try {
     await fetchRuns();
-    await loadFailReasons(mergedRows());
+    await loadRunAnnotations(mergedRows());
     renderRunStatus();
   } catch (e) { /* 静默失败，不影响使用 */ }
 }
