@@ -47,6 +47,9 @@ jobs:
           QQ_SMTP_AUTH_CODE: ${{ secrets.QQ_SMTP_AUTH_CODE }}
           QQ_EMAIL_TO: ${{ secrets.QQ_EMAIL_TO }}
           WECOM_WEBHOOK_KEY: ${{ secrets.WECOM_WEBHOOK_KEY }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          # 设为 0 可关闭“把 PDF 传到公开直链”（微信推送仍会发，只是不带直链）
+          PUBLIC_UPLOAD: "1"
         run: python pdf_pusher.py --config tasks.json --output-dir output
 
       - name: 备份 PDF 和运行产物

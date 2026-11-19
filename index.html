@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>网页 PDF 控制台</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1f2328; --muted: #6b7280;
+    --primary: #2f6fed; --primary-dark: #1f55c4; --danger: #d1242f;
+    --ok: #1a7f37; --border: #e5e7eb; --warn-bg: #fff8e1;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); font-size: 16px; line-height: 1.5; }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 14px; }
+  h1 { font-size: 20px; margin: 6px 0 14px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .card h2 { font-size: 16px; margin: 0 0 10px; display: flex; align-items: center; justify-content: space-between; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=password], textarea { width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 15px; font-family: inherit; background: #fff; }
+  textarea { min-height: 84px; resize: vertical; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button { border: none; border-radius: 8px; padding: 11px 14px; font-size: 15px; font-weight: 600; cursor: pointer; background: var(--primary); color: #fff; width: 100%; }
+  button:active { background: var(--primary-dark); }
+  button.ghost { background: #eef2ff; color: var(--primary); }
+  button.danger { background: #ffeef0; color: var(--danger); }
+  button.ok { background: #e6f4ea; color: var(--ok); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .task { border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 8px; background: #fafbfc; }
+  .task-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .task-top input.name { flex: 1; font-weight: 600; }
+  .del { flex: 0 0 auto; width: auto; padding: 8px 10px; background: #ffeef0; color: var(--danger); }
+  .switch { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .switch input { width: 18px; height: 18px; }
+  .btn-row { display: flex; gap: 8px; margin-top: 10px; }
+  .btn-row button { flex: 1; }
+  #log { background: #0d1117; color: #c9d1d9; border-radius: 10px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .warn { background: var(--warn-bg); border: 1px solid #ffe0a3; border-radius: 10px; padding: 10px; font-size: 13px; color: #7a5a00; margin-bottom: 12px; }
+  .ok-text { color: var(--ok); }
+  .err-text { color: var(--danger); }
+  details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📄 网页 PDF 控制台</h1>
+
+  <div class="warn">
+    ⚙️ 首次使用请先在「设置」里填入 GitHub Token（只会保存在你这部手机的浏览器里，不会上传到任何地方）。
+  </div>
+
+  <div class="card">
+    <h2>⚙️ 设置 <button id="testConn" class="ghost" style="width:auto;padding:6px 12px;font-size:13px;">测试连接</button></h2>
+    <details>
+      <summary>展开 / 收起</summary>
+      <label>GitHub Token（需要 repo + workflow 权限）</label>
+      <input type="password" id="token" placeholder="ghp_...">
+      <div class="row">
+        <div><label>仓库所有者</label><input type="text" id="owner" value="Kei-cobe"></div>
+        <div><label>仓库名</label><input type="text" id="repo" value="GetHtml2Pdf"></div>
+      </div>
+      <label>工作流文件名</label>
+      <input type="text" id="workflow" value="pdf-delivery.yml">
+      <div class="btn-row">
+        <button id="saveSet" class="ghost">保存设置</button>
+        <button id="clearSet" class="danger">清除设置</button>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>📋 定时任务（网址 + 备注）</h2>
+    <div id="tasks">
+      <p class="hint">点「从仓库读取」加载当前 tasks.json</p>
+    </div>
+    <div class="btn-row">
+      <button id="addTask" class="ghost">＋ 添加任务</button>
+      <button id="loadTasks">从仓库读取</button>
+    </div>
+    <button id="saveTasks" style="margin-top:8px;">💾 保存到仓库（覆盖 tasks.json）</button>
+    <p class="hint">frame_selector 可留空；若内容在 iframe 里，填如 <code>iframe[src*='ziliao']</code>。</p>
+  </div>
+
+  <div class="card">
+    <h2>🚀 立即执行</h2>
+    <label>临时任务（可选，留空则执行上面保存的定时任务）</label>
+    <textarea id="manual" placeholder="资料 4 | https://xxx.com/page#4; 资料 6 | https://xxx.com/page#6"></textarea>
+    <div class="btn-row">
+      <button id="runSaved">执行保存的任务</button>
+      <button id="runManual" class="ok">执行临时任务</button>
+    </div>
+    <p class="hint">执行后去 GitHub → Actions 查看进度，PDF 会推送到你的邮箱 / 企业微信 / 微信。</p>
+  </div>
+
+  <div class="card">
+    <h2>📜 日志</h2>
+    <div id="log">就绪。</div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const LS = { get: (k) => localStorage.getItem('pdf_ctrl_' + k), set: (k, v) => localStorage.setItem('pdf_ctrl_' + k, v), del: (k) => localStorage.removeItem('pdf_ctrl_' + k) };
+
+function log(msg, cls) {
+  const el = $('log');
+  const t = new Date().toLocaleTimeString('zh-CN');
+  const line = cls ? `[${t}] <span class="${cls}">${msg}</span>` : `[${t}] ${msg}`;
+  el.innerHTML = line + '\n' + el.innerHTML;
+}
+
+function b64encodeUnicode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  bytes.forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin);
+}
+function b64decodeUnicode(b64) {
+  const bin = atob(b64.replace(/\s/g, ''));
+  const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function cfg() {
+  return {
+    token: $('token').value.trim(),
+    owner: $('owner').value.trim(),
+    repo: $('repo').value.trim(),
+    workflow: $('workflow').value.trim(),
+  };
+}
+function loadCfg() {
+  if (LS.get('token')) $('token').value = LS.get('token');
+  if (LS.get('owner')) $('owner').value = LS.get('owner');
+  if (LS.get('repo')) $('repo').value = LS.get('repo');
+  if (LS.get('workflow')) $('workflow').value = LS.get('workflow');
+}
+function saveCfg() {
+  LS.set('token', $('token').value.trim());
+  LS.set('owner', $('owner').value.trim());
+  LS.set('repo', $('repo').value.trim());
+  LS.set('workflow', $('workflow').value.trim());
+  log('设置已保存在本机', 'ok-text');
+}
+
+async function gh(method, path, body) {
+  const { token, owner, repo } = cfg();
+  const url = `https://api.github.com/repos/${owner}/${repo}${path}`;
+  const opts = { method, headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + token, 'X-GitHub-Api-Version': '2022-11-28' } };
+  if (body !== undefined) opts.headers['Content-Type'] = 'application/json';
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  let text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+  if (!res.ok) {
+    const msg = data && data.message ? data.message : `HTTP ${res.status}`;
+    throw new Error(`${method} ${path} 失败：${msg}`);
+  }
+  return data;
+}
+
+let currentSha = null;
+let tasks = [];
+
+function renderTasks() {
+  const box = $('tasks');
+  if (!tasks.length) { box.innerHTML = '<p class="hint">暂无任务，点「＋ 添加任务」</p>'; return; }
+  box.innerHTML = tasks.map((t, i) => `
+    <div class="task">
+      <div class="task-top">
+        <span class="switch"><input type="checkbox" data-i="${i}" data-k="enabled" ${t.enabled !== false ? 'checked' : ''}></span>
+        <input class="name" type="text" data-i="${i}" data-k="name" placeholder="备注名" value="${esc(t.name || '')}">
+        <button class="del" data-del="${i}">删</button>
+      </div>
+      <input type="text" data-i="${i}" data-k="url" placeholder="网址 https://..." value="${esc(t.url || '')}" style="margin-bottom:6px;">
+      <input type="text" data-i="${i}" data-k="frame_selector" placeholder="iframe 选择器（可留空）" value="${esc(t.frame_selector || '')}">
+    </div>
+  `).join('');
+  box.querySelectorAll('input').forEach(inp => {
+    inp.addEventListener('input', onEdit);
+    inp.addEventListener('change', onEdit);
+  });
+  box.querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => {
+    tasks.splice(+b.dataset.del, 1); renderTasks();
+  }));
+}
+function esc(s) { return String(s).replace(/"/g, '&quot;'); }
+function onEdit(e) {
+  const i = +e.target.dataset.i, k = e.target.dataset.k;
+  if (k === 'enabled') tasks[i][k] = e.target.checked;
+  else tasks[i][k] = e.target.value;
+}
+
+$('addTask').onclick = () => { tasks.push({ name: '新任务', url: '', frame_selector: '', enabled: true }); renderTasks(); };
+
+$('loadTasks').onclick = async () => {
+  try {
+    const data = await gh('GET', '/contents/tasks.json');
+    currentSha = data.sha;
+    const parsed = JSON.parse(b64decodeUnicode(data.content));
+    tasks = (parsed.tasks || []).map(t => ({ name: t.name || '', url: t.url || '', frame_selector: t.frame_selector || '', enabled: t.enabled !== false }));
+    renderTasks();
+    log('已从仓库读取 ' + tasks.length + ' 个任务', 'ok-text');
+  } catch (e) { log(e.message, 'err-text'); }
+};
+
+$('saveTasks').onclick = async () => {
+  try {
+    for (const t of tasks) {
+      if (!t.url || !/^https?:\/\//i.test(t.url)) throw new Error('任务「' + (t.name || '未命名') + '」网址无效，需以 http(s):// 开头');
+    }
+    const content = b64encodeUnicode(JSON.stringify({ tasks }, null, 2));
+    if (!currentSha) {
+      const data = await gh('GET', '/contents/tasks.json');
+      currentSha = data.sha;
+    }
+    await gh('PUT', '/contents/tasks.json', { message: '更新定时任务', content, sha: currentSha });
+    log('已保存到仓库，下次定时执行将自动生效', 'ok-text');
+    // refresh sha
+    const data = await gh('GET', '/contents/tasks.json');
+    currentSha = data.sha;
+  } catch (e) { log(e.message, 'err-text'); }
+};
+
+async function dispatch(manual) {
+  try {
+    const { workflow } = cfg();
+    const body = { ref: 'main', inputs: { tasks: manual || '' } };
+    await gh('POST', `/actions/workflows/${workflow}/dispatches`, body);
+    log(manual ? '已触发：执行临时任务' : '已触发：执行保存的任务', 'ok-text');
+  } catch (e) { log(e.message, 'err-text'); }
+}
+$('runSaved').onclick = () => dispatch('');
+$('runManual').onclick = () => dispatch($('manual').value.trim());
+
+$('saveSet').onclick = saveCfg;
+$('clearSet').onclick = () => { ['token','owner','repo','workflow'].forEach(k => LS.del(k)); $('token').value=''; log('已清除本机设置'); };
+$('testConn').onclick = async () => {
+  try { saveCfg(); const data = await gh('GET', ''); log('连接成功：' + data.full_name + '（默认分支 ' + data.default_branch + '）', 'ok-text'); }
+  catch (e) { log(e.message, 'err-text'); }
+};
+
+loadCfg();
+</script>
+</body>
+</html>

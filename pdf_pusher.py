@@ -412,6 +412,75 @@ def send_wecom_pdf(result: CaptureResult) -> None:
         logging.info("企业微信下载通知已发送")
 
 
+def _upload_catbox(pdf_path: Path) -> str | None:
+    with pdf_path.open("rb") as file:
+        response = requests.post(
+            "https://catbox.moe/user/api.php",
+            data={"reqtype": "fileupload"},
+            files={"fileToUpload": (pdf_path.name, file, "application/pdf")},
+            timeout=120,
+        )
+    url = response.text.strip()
+    return url if url.startswith("http") else None
+
+
+def _upload_0x0(pdf_path: Path) -> str | None:
+    with pdf_path.open("rb") as file:
+        response = requests.post(
+            "https://0x0.st",
+            files={"file": (pdf_path.name, file, "application/pdf")},
+            timeout=120,
+        )
+    url = response.text.strip()
+    return url if url.startswith("http") else None
+
+
+def upload_public(pdf_path: Path) -> str | None:
+    """把 PDF 传到可公开访问的临时托管，返回直链；全部失败返回 None。"""
+    if os.getenv("PUBLIC_UPLOAD", "1").lower() not in {"1", "true", "yes", "on"}:
+        return None
+    for uploader in (_upload_catbox, _upload_0x0):
+        try:
+            url = uploader(pdf_path)
+        except requests.RequestException as exc:
+            logging.warning("公开上传失败（%s）：%s", uploader.__name__, type(exc).__name__)
+            continue
+        if url:
+            logging.info("PDF 已上传至公开地址：%s", url)
+            return url
+    return None
+
+
+def send_pushplus(result: CaptureResult, public_url: str | None) -> None:
+    token = os.environ["PUSHPLUS_TOKEN"]
+    size_mb = result.pdf_path.stat().st_size / 1_048_576
+    link = public_url or github_run_url()
+    link_md = f"[点此在微信中打开 / 下载 PDF]({link})" if link else "PDF 已随邮件和企业微信发送"
+    content = (
+        f"**网页 PDF 已生成**\n\n"
+        f"- 任务：{result.task.name}\n"
+        f"- 大小：{size_mb:.1f} MB\n"
+        f"- 来源：{result.task.url}\n\n"
+        f"{link_md}\n\n"
+        f"完整版 PDF 同时已发送至 QQ 邮箱和企业微信群。"
+    )
+    payload = {
+        "token": token,
+        "title": f"[网页 PDF] {result.task.name}",
+        "content": content,
+        "template": "markdown",
+    }
+    response = requests.post("https://www.pushplus.plus/send", json=payload, timeout=60)
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(f"PushPlus 返回 HTTP {response.status_code}") from None
+    if response.status_code != 200 or data.get("code") != 200:
+        detail = str(data.get("msg") or f"HTTP {response.status_code}")[:200]
+        raise RuntimeError(f"PushPlus 接口错误：{detail}")
+    logging.info("微信（PushPlus）推送已发送")
+
+
 def deliver_pdf(result: CaptureResult) -> list[str]:
     errors = []
     email_variables = ("QQ_SMTP_USERNAME", "QQ_SMTP_AUTH_CODE", "QQ_EMAIL_TO")
@@ -429,7 +498,17 @@ def deliver_pdf(result: CaptureResult) -> list[str]:
             send_wecom_pdf(result)
         except RuntimeError as exc:
             errors.append(str(exc))
-    if not configured_email and not os.getenv("WECOM_WEBHOOK_KEY"):
+    if os.getenv("PUSHPLUS_TOKEN"):
+        try:
+            public_url = upload_public(result.pdf_path)
+            send_pushplus(result, public_url)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+    if (
+        not configured_email
+        and not os.getenv("WECOM_WEBHOOK_KEY")
+        and not os.getenv("PUSHPLUS_TOKEN")
+    ):
         logging.info("未配置推送 Secrets，仅保留 PDF 文件")
     return errors
 
