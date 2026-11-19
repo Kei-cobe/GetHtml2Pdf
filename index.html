@@ -88,7 +88,7 @@
       <button id="loadTasks">从仓库读取</button>
     </div>
     <button id="saveTasks" style="margin-top:8px;">💾 保存到仓库（覆盖 tasks.json）</button>
-    <p class="hint">frame_selector 可留空；若内容在 iframe 里，填如 <code>iframe[src*='ziliao']</code>。</p>
+    <p class="hint">只需填备注名和网址；若内容在 iframe 里会自动识别并完整打印。</p>
   </div>
 
   <div class="card">
@@ -223,8 +223,7 @@ function renderTasks() {
         <input class="name" type="text" data-i="${i}" data-k="name" placeholder="备注名" value="${esc(t.name || '')}">
         <button class="del" data-del="${i}">删</button>
       </div>
-      <input type="text" data-i="${i}" data-k="url" placeholder="网址 https://..." value="${esc(t.url || '')}" style="margin-bottom:6px;">
-      <input type="text" data-i="${i}" data-k="frame_selector" placeholder="iframe 选择器（可留空）" value="${esc(t.frame_selector || '')}">
+      <input type="text" data-i="${i}" data-k="url" placeholder="网址 https://..." value="${esc(t.url || '')}">
     </div>
   `).join('');
   box.querySelectorAll('input').forEach(inp => {
