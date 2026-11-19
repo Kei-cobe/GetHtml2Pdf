@@ -407,10 +407,31 @@ function mergedRows() {
   return rows;
 }
 
+function zhReason(raw) {
+  const t = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  const rules = [
+    [/ERR_NAME_NOT_RESOLVED|ENOTFOUND/i, '网址域名无法解析'],
+    [/ERR_CERT|ERR_SSL/i, '网站证书异常'],
+    [/ERR_ABORTED/i, '网页加载被中断'],
+    [/ERR_HTTP_RESPONSE_CODE_FAILURE|HTTP 4\d\d|HTTP 5\d\d/i, '网页返回错误状态'],
+    [/ERR_EMPTY_RESPONSE/i, '网页返回空内容'],
+    [/ERR_TOO_MANY_REDIRECTS/i, '网页重定向次数过多'],
+    [/ERR_CONNECTION_REFUSED|ECONNREFUSED/i, '网站拒绝连接'],
+    [/ERR_CONNECTION_TIMED_OUT|ERR_TIMED_OUT|ETIMEDOUT|timeout|timed out/i, '网页加载超时'],
+    [/ERR_INTERNET_DISCONNECTED|ENETUNREACH|net::err/i, '网页访问失败'],
+    [/browser has been closed|Target page|Target closed|crash/i, '浏览器页面异常关闭'],
+    [/executable doesn't exist/i, '浏览器组件缺失'],
+  ];
+  for (const [re, msg] of rules) if (re.test(t)) return msg;
+  if (/[\u4e00-\u9fa5]/.test(t)) return t.length > 28 ? t.slice(0, 28) + '…' : t;
+  return '任务执行异常';
+}
+
 function failText(row) {
   if (row.status !== 'completed' || !row.conclusion || row.conclusion === 'success') return '';
   if (row.conclusion === 'cancelled') return '已取消';
-  const detail = reasonCache[row.id];
+  const detail = zhReason(reasonCache[row.id] || '');
   if (row.conclusion === 'timed_out') return '执行超时' + (detail ? '：' + detail : '');
   return '执行失败' + (detail ? '：' + detail : '');
 }

@@ -274,9 +274,65 @@ async def prepare_document(page: Page, task: Task) -> None:
         logging.warning("字体等待超时，将继续生成 PDF")
 
 
+A4_WIDTH_MM = 210
+A4_WIDTH_PX = round(A4_WIDTH_MM / 25.4 * 96)  # 与 A4 纸宽 1:1 对应的 CSS 像素
+MAX_PDF_HEIGHT_IN = 200.0  # Chromium 单页高度上限
+MIN_PDF_SCALE = 0.1
+
+
+async def print_long_pdf(page: Any, pdf_path: Path) -> None:
+    """把整页内容输出为一张不分页的长条 PDF。"""
+    metrics = await page.evaluate(
+        """() => {
+            const se = document.scrollingElement || document.documentElement;
+            const body = document.body;
+            const h = Math.max(se ? se.scrollHeight : 0, body ? body.scrollHeight : 0);
+            return { height: Math.max(1, Math.ceil(h)) };
+        }"""
+    )
+    content_px = int(metrics.get("height") or 0)
+    height_in = content_px / 96.0
+    scale = 1.0
+    if height_in > MAX_PDF_HEIGHT_IN:
+        # 留一点余量，避免浮点误差多出一张空白页
+        scale = (MAX_PDF_HEIGHT_IN - 0.5) / height_in
+        height_in = MAX_PDF_HEIGHT_IN
+    if scale < MIN_PDF_SCALE:
+        logging.warning("页面过长（%s px），改为 A4 分页输出", content_px)
+        await print_paginated_pdf(page, pdf_path)
+        return
+    logging.info("输出长条 PDF：高 %.1f 英寸，缩放 %.2f", height_in, scale)
+    await page.pdf(
+        path=str(pdf_path),
+        width=f"{A4_WIDTH_MM}mm",
+        height=f"{height_in:.2f}in",
+        scale=scale,
+        print_background=True,
+        margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+    )
+
+
+async def print_paginated_pdf(page: Any, pdf_path: Path) -> None:
+    """超长页面的兜底方案：按 A4 分页。"""
+    await page.pdf(
+        path=str(pdf_path),
+        format="A4",
+        print_background=True,
+        display_header_footer=True,
+        header_template="<div></div>",
+        footer_template="""
+            <div style="box-sizing:border-box;width:100%;padding:0 10mm;font-size:8px;color:#666;display:flex;justify-content:space-between;">
+                <span class="date"></span>
+                <span><span class="pageNumber"></span> / <span class="totalPages"></span></span>
+            </div>
+        """,
+        margin={"top": "10mm", "right": "8mm", "bottom": "14mm", "left": "8mm"},
+    )
+
+
 async def capture_pdf(browser: Any, task: Task, output_dir: Path) -> CaptureResult:
     context = await browser.new_context(
-        viewport={"width": 1440, "height": 1000},
+        viewport={"width": A4_WIDTH_PX, "height": 1200},
         locale="zh-CN",
         timezone_id="Asia/Shanghai",
         ignore_https_errors=True,
@@ -293,20 +349,7 @@ async def capture_pdf(browser: Any, task: Task, output_dir: Path) -> CaptureResu
             await navigate(page, frame_url)
         await prepare_document(page, task)
         pdf_path = safe_pdf_path(output_dir, task)
-        await page.pdf(
-            path=str(pdf_path),
-            format="A4",
-            print_background=True,
-            display_header_footer=True,
-            header_template="<div></div>",
-            footer_template="""
-                <div style="box-sizing:border-box;width:100%;padding:0 10mm;font-size:8px;color:#666;display:flex;justify-content:space-between;">
-                    <span class="date"></span>
-                    <span><span class="pageNumber"></span> / <span class="totalPages"></span></span>
-                </div>
-            """,
-            margin={"top": "10mm", "right": "8mm", "bottom": "14mm", "left": "8mm"},
-        )
+        await print_long_pdf(page, pdf_path)
         if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
             raise RuntimeError("PDF 文件未生成")
         logging.info("PDF 已生成：%s（%.1f MB）", pdf_path.name, pdf_path.stat().st_size / 1_048_576)
@@ -558,6 +601,40 @@ def deliver_pdf(result: CaptureResult) -> list[str]:
     return errors
 
 
+def humanize_failure(exc: BaseException) -> str:
+    """把底层异常翻译成一句中文简短说明（用于控制台任务列表）。"""
+    raw = f"{type(exc).__name__}: {exc}".lower()
+    rules = [
+        ("err_name_not_resolved", "网址域名无法解析"),
+        ("err_connection_timed_out", "连接网站超时"),
+        ("err_connection_refused", "网站拒绝连接"),
+        ("err_connection_reset", "连接被网站重置"),
+        ("err_connection_closed", "连接被网站关闭"),
+        ("err_internet_disconnected", "网络连接中断"),
+        ("err_cert", "网站证书异常"),
+        ("err_ssl", "网站证书异常"),
+        ("err_aborted", "网页加载被中断"),
+        ("err_http_response_code_failure", "网页返回错误状态"),
+        ("err_empty_response", "网页返回空内容"),
+        ("err_too_many_redirects", "网页重定向次数过多"),
+        ("timeout", "网页加载超时"),
+        ("target page, context or browser has been closed", "浏览器页面异常关闭"),
+        ("browser has been closed", "浏览器异常关闭"),
+        ("executable doesn't exist", "浏览器组件缺失"),
+        ("net::err", "网页访问失败"),
+        ("pdf 文件未生成", "PDF 生成失败"),
+        ("pdf 内容为空", "页面内容为空"),
+        ("bad address syntax", "收件邮箱格式错误"),
+        ("smtp", "邮箱发送失败"),
+        ("wecom", "企业微信推送失败"),
+        ("pushplus", "微信推送失败"),
+    ]
+    for needle, message in rules:
+        if needle in raw:
+            return message
+    return "抓取时出现异常"
+
+
 async def async_main() -> int:
     parser = argparse.ArgumentParser(description="完整保存网页为 PDF，并通过 QQ 邮件和企业微信推送")
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("tasks.json"))
@@ -589,7 +666,7 @@ async def async_main() -> int:
                         failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result))
                 except Exception as exc:
                     logging.exception("任务失败：%s", task.name)
-                    failures.append(f"{task.name}：{type(exc).__name__}: {exc}")
+                    failures.append(f"{task.name}：{humanize_failure(exc)}")
         finally:
             await browser.close()
 
