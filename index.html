@@ -130,37 +130,37 @@
       </div>
 
       <hr style="border:none;border-top:1px dashed var(--border);margin:16px 0 10px;">
-      <h3 style="font-size:14px;margin:6px 0 4px;color:var(--text);">⏰ 定时设置（北京时间）</h3>
-      <div id="schedules"><p class="hint">点下方「读取定时」加载当前设置</p></div>
-      <div class="row" style="margin-top:8px;">
-        <input type="time" id="newTime" value="17:00">
-        <button id="addTime" class="ghost" style="flex:0 0 auto;width:auto;">添加</button>
+      <h3 style="font-size:14px;margin:6px 0 4px;color:var(--text);">📋 定时任务（网址 + 备注）</h3>
+      <div id="tasks">
+        <p class="hint">点下方「从仓库读取」加载当前 tasks.json</p>
       </div>
       <div class="btn-row">
-        <button id="loadSched" class="ghost">读取定时</button>
-        <button id="saveSched">保存到仓库</button>
+        <button id="addTask" class="ghost">＋ 添加任务</button>
+        <button id="loadTasks">从仓库读取</button>
       </div>
-      <p class="hint">按北京时间设置，会自动换算成 UTC 写入工作流。保存后约 1 分钟生效。</p>
+      <button id="saveTasks" style="margin-top:8px;">💾 保存到仓库（覆盖 tasks.json）</button>
+      <p class="hint">只需填备注名和网址；若内容在 iframe 里会自动识别并完整打印。</p>
     </details>
   </div>
 
   <div class="card">
-    <h2>📋 定时任务（网址 + 备注）</h2>
-    <div id="tasks">
-      <p class="hint">点「从仓库读取」加载当前 tasks.json</p>
+    <h2>⏰ 定时设置（北京时间）</h2>
+    <div id="schedules"><p class="hint">点「读取定时」加载当前设置</p></div>
+    <div class="row" style="margin-top:8px;">
+      <input type="time" id="newTime" value="17:00">
+      <button id="addTime" class="ghost" style="flex:0 0 auto;width:auto;">添加</button>
     </div>
     <div class="btn-row">
-      <button id="addTask" class="ghost">＋ 添加任务</button>
-      <button id="loadTasks">从仓库读取</button>
+      <button id="loadSched" class="ghost">读取定时</button>
+      <button id="saveSched">保存到仓库</button>
     </div>
-    <button id="saveTasks" style="margin-top:8px;">💾 保存到仓库（覆盖 tasks.json）</button>
-    <p class="hint">只需填备注名和网址；若内容在 iframe 里会自动识别并完整打印。</p>
+    <p class="hint">按北京时间设置，会自动换算成 UTC 写入工作流。保存后约 1 分钟生效。</p>
   </div>
 
   <div class="card">
     <h2>🚀 立即执行 <span id="runStatus" class="chip idle">✔ 当前无任务正在执行</span></h2>
     <div id="runCards">
-      <p class="hint">点上方「从仓库读取」加载任务卡片，或先在「定时任务」里添加并保存。</p>
+      <p class="hint">点上方「从仓库读取」加载任务卡片，或先展开「设置」添加并保存定时任务。</p>
     </div>
     <div class="btn-row">
       <button id="selectAll" class="ghost">全选</button>
