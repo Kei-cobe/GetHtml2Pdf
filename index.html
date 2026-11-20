@@ -84,6 +84,19 @@
   .status-row .st-err { margin-top: 3px; color: var(--danger); font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-warn { margin-top: 3px; color: #b25e09; font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-time { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+  /* 左滑删除 */
+  .swipe-row { position: relative; overflow: hidden; border-radius: 9px; }
+  .swipe-del { position: absolute; right: 0; top: 0; bottom: 0; width: 64px; border: 0; background: #d1242f; color: #fff; font-size: 16px; font-weight: 600; cursor: pointer; }
+  .swipe-content { position: relative; transition: transform .18s ease; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+  .swipe-row.open .swipe-content { transform: translateX(-64px); }
+  /* 删除确认框 */
+  .confirm-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 10000; }
+  .confirm-mask.hide { display: none; }
+  .confirm-box { width: min(80vw, 320px); background: #fff; border-radius: 14px; padding: 20px 18px 14px; box-shadow: 0 12px 34px rgba(0,0,0,.2); }
+  .confirm-msg { font-size: 15px; line-height: 1.5; word-break: break-all; margin-bottom: 16px; }
+  .confirm-btns { display: flex; gap: 10px; }
+  .confirm-btns button { flex: 1; padding: 10px 0; border-radius: 8px; font-size: 15px; border: 1px solid var(--border); background: #f5f6f8; cursor: pointer; }
+  .confirm-btns .confirm-ok { background: #d1242f; color: #fff; border-color: #d1242f; }
   .chk-row { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 4px 0 6px; }
   .chk { display: flex; align-items: center; gap: 6px; font-weight: 600; margin: 0; }
   .chk input { width: auto; margin: 0; }
@@ -196,6 +209,15 @@
     <div>
       <div class="spinner"></div>
       <div class="loading-text">请稍后<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div>
+    </div>
+  </div>
+  <div class="confirm-mask hide" id="confirmMask">
+    <div class="confirm-box">
+      <div class="confirm-msg" id="confirmMsg"></div>
+      <div class="confirm-btns">
+        <button type="button" id="confirmCancel">取消</button>
+        <button type="button" class="confirm-ok" id="confirmOk">删除</button>
+      </div>
     </div>
   </div>
 </div>
@@ -371,6 +393,7 @@ $('saveTasks').onclick = async () => {
 
 // ===== 任务状态（读取 GitHub Actions 运行记录）=====
 let runRecords = [];        // 本机下发记录 [{id,label,count,ts}]
+let deletedRuns = [];       // 本机删除的 run id 黑名单（仅影响本机列表显示，不删 GitHub 记录）
 let apiRuns = [];           // 今日该工作流的运行列表
 let pendingDispatch = null;
 let pollTimer = null;
@@ -380,6 +403,7 @@ function isToday(value) { return new Date(value).toDateString() === new Date().t
 function loadRecords() {
   try { runRecords = JSON.parse(LS.get('runs') || '[]'); } catch (e) { runRecords = []; }
   runRecords = runRecords.filter(r => isToday(r.ts));
+  try { deletedRuns = JSON.parse(LS.get('deleted_runs') || '[]'); } catch (e) { deletedRuns = []; }
 }
 function saveRecords() { LS.set('runs', JSON.stringify(runRecords.slice(-60))); }
 
@@ -451,7 +475,8 @@ function mergedRows() {
   const apiIds = new Set(apiRuns.map(r => r.id));
   runRecords.forEach(r => { if (!apiIds.has(r.id)) rows.push({ ...r, status: 'queued', conclusion: null }); });
   rows.sort((a, b) => b.ts - a.ts);
-  return rows;
+  const delSet = new Set(deletedRuns.map(String));
+  return rows.filter(r => !delSet.has(String(r.id)));
 }
 
 function zhReason(raw) {
@@ -561,13 +586,89 @@ function renderRunStatus() {
     } else {
       labelHtml = `<div class="st-label">${esc(r.label)}</div>`;
     }
-    return `<div class="status-row">${icon}<div class="st-main">${labelHtml}${reasonHtml}${warnHtml}</div><span class="st-time">${time}</span></div>`;
+    return `<div class="swipe-row" data-id="${esc(String(r.id))}" data-label="${esc(r.label)}" data-time="${time}"><button type="button" class="swipe-del">删</button><div class="status-row swipe-content">${icon}<div class="st-main">${labelHtml}${reasonHtml}${warnHtml}</div><span class="st-time">${time}</span></div></div>`;
   }).join('') + '</div>';
   // 给渲染出的每个矩形按钮绑定点击跳转
   box.querySelectorAll('.st-btn').forEach(b => b.addEventListener('click', () => {
     const u = b.dataset.href; if (u) location.href = u;
   }));
+  // 左滑手势 + 删除按钮
+  box.querySelectorAll('.swipe-row').forEach(row => {
+    bindSwipe(row);
+    row.querySelector('.swipe-del').addEventListener('click', () => {
+      askDelete(row.dataset.id, row.dataset.label, row.dataset.time);
+    });
+  });
 }
+
+function closeAllSwipes(except) {
+  document.querySelectorAll('.swipe-row.open').forEach(r => { if (r !== except) r.classList.remove('open'); });
+}
+
+function bindSwipe(row) {
+  const content = row.querySelector('.swipe-content');
+  let startX = 0, startY = 0, dx = 0, dragging = false, decided = false, moved = false;
+  content.addEventListener('pointerdown', e => {
+    startX = e.clientX; startY = e.clientY; dx = 0;
+    dragging = true; decided = false; moved = false;
+    content.style.transition = 'none';
+    try { content.setPointerCapture(e.pointerId); } catch (err) { /* 忽略不支持的场景 */ }
+  });
+  content.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const mx = e.clientX - startX, my = e.clientY - startY;
+    if (!decided) {
+      if (Math.abs(mx) < 6 && Math.abs(my) < 6) return;
+      decided = true;
+      if (Math.abs(my) > Math.abs(mx)) { dragging = false; content.style.transition = ''; return; } // 竖向滚动让位
+      moved = true;
+    }
+    dx = mx;
+    const base = row.classList.contains('open') ? -64 : 0;
+    const offset = Math.max(-96, Math.min(0, base + dx));
+    content.style.transform = `translateX(${offset}px)`;
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    content.style.transition = '';
+    content.style.transform = '';
+    const base = row.classList.contains('open') ? -64 : 0;
+    if (base + dx < -32) { closeAllSwipes(row); row.classList.add('open'); }
+    else row.classList.remove('open');
+  };
+  content.addEventListener('pointerup', end);
+  content.addEventListener('pointercancel', end);
+  // 拖动后抑制 click（避免误触任务按钮跳转）；已展开时点击内容区则收回
+  content.addEventListener('click', e => {
+    if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; return; }
+    if (row.classList.contains('open')) { row.classList.remove('open'); e.stopPropagation(); e.preventDefault(); }
+  }, true);
+}
+
+let pendingDeleteId = null;
+function askDelete(id, label, time) {
+  pendingDeleteId = id;
+  $('confirmMsg').textContent = `确认删除${label} ${time}任务？`;
+  $('confirmMask').classList.remove('hide');
+}
+$('confirmCancel').onclick = () => {
+  pendingDeleteId = null;
+  $('confirmMask').classList.add('hide');
+  closeAllSwipes();
+};
+$('confirmOk').onclick = () => {
+  if (pendingDeleteId) {
+    deletedRuns.push(String(pendingDeleteId));
+    LS.set('deleted_runs', JSON.stringify(deletedRuns.slice(-100)));
+    runRecords = runRecords.filter(r => String(r.id) !== String(pendingDeleteId));
+    saveRecords();
+  }
+  pendingDeleteId = null;
+  $('confirmMask').classList.add('hide');
+  renderRunStatus();
+  toast('✓ 已删除');
+};
 
 async function pollStatus() {
   if (!LS.get('token')) return;
