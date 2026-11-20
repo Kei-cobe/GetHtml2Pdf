@@ -63,9 +63,14 @@ jobs:
         run: |
           set -e
           TAG="preview-${GITHUB_RUN_ID}"
-          gh release create "$TAG" --title "预览图 ${GITHUB_RUN_ID}" --notes "$(cat previews/run-${GITHUB_RUN_ID}/manifest.json)" >/dev/null 2>&1 || true
+          MANIFEST="previews/run-${GITHUB_RUN_ID}/manifest.json"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "本次没有生成预览图，跳过发布（不影响 PDF 推送）"
+            exit 0
+          fi
+          gh release create "$TAG" --title "预览图 ${GITHUB_RUN_ID}" --notes "$(cat "$MANIFEST")" >/dev/null 2>&1 || true
           # manifest.json 也作为 asset 上传：预览页直接下载它，无需调用 GitHub API（匿名 API 易 403 限流）
-          gh release upload "$TAG" "previews/run-${GITHUB_RUN_ID}/manifest.json" --clobber
+          gh release upload "$TAG" "$MANIFEST" --clobber
           find previews -type f -name '*.jpg' -print0 \
             | xargs -0 -r -n 20 gh release upload "$TAG" --clobber
           # 只保留最近 6 次预览发布，避免占用过多空间

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -335,33 +336,42 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
     filename = f"{prefix:02d}.jpg"
     target = target_dir / filename
     await page.evaluate("() => window.scrollTo(0, 0)")
-    viewport_width = A4_WIDTH_PX
+    client = await page.context.new_cdp_session(page)
+    viewport_width, page_height = A4_WIDTH_PX, total
     try:
-        client = await page.context.new_cdp_session(page)
         layout = await client.send("Page.getLayoutMetrics")
         size = layout.get("cssContentSize") or layout.get("contentSize") or {}
-        page_w, page_h = int(size.get("width") or 0), int(size.get("height") or 0)
-        if page_w > 0:
-            viewport_width = min(2400, page_w)
-        if page_h > 0:
-            total = min(total, page_h)  # 裁剪区域不能超出 CDP 认定的页面内容，否则报 outside
+        viewport_width = int(size.get("width") or 0) or viewport_width
+        page_height = int(size.get("height") or 0) or page_height
     except Exception:
         pass
+    viewport_width = max(1, min(2400, viewport_width))
+    total = min(total, page_height)
 
     # 超高页面一次性截图会触发 Chromium "Unable to encode screenshot"，
-    # 因此按固定高度分块截取（每块仍在 2 倍 DPI 下），再纵向拼成一张完整长图。
+    # 因此按固定高度分块截取（仍保持 2 倍 DPI），再纵向拼成一张完整长图。
+    # 用 CDP 直接截取，避免 Playwright 对越界裁剪区域的校验。
     seg_css = PREVIEW_SEGMENT_CSS
     parts: list[Path] = []
     for index, top in enumerate(range(0, total, seg_css)):
         height = min(seg_css, total - top)
         part = target_dir / f"{prefix:02d}-part{index:02d}.jpg"
-        await page.screenshot(
-            path=str(part),
-            clip={"x": 0, "y": top, "width": viewport_width, "height": height},
-            type="jpeg",
-            quality=82,
-            timeout=120_000,
+        result = await client.send(
+            "Page.captureScreenshot",
+            {
+                "format": "jpeg",
+                "quality": 82,
+                "captureBeyondViewport": True,
+                "clip": {
+                    "x": 0,
+                    "y": top,
+                    "width": viewport_width,
+                    "height": height,
+                    "scale": PREVIEW_DEVICE_SCALE,
+                },
+            },
         )
+        part.write_bytes(base64.b64decode(result["data"]))
         parts.append(part)
 
     if len(parts) == 1:
