@@ -61,7 +61,7 @@
   .chip { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
   .chip.idle { background: #e6f4ea; color: var(--ok); }
   .chip.busy { background: #fff4e5; color: #b25e09; }
-  .status-list { display: flex; flex-direction: column; gap: 6px; max-height: 120px; overflow-y: auto; padding-right: 2px; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+  .status-list { display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; padding-right: 2px; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
   .status-row { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: #fafbfc; font-size: 13px; }
   .status-row .st-main { flex: 1; min-width: 0; }
   .status-row .st-label { white-space: normal; word-break: break-word; line-height: 1.35; }
@@ -128,6 +128,19 @@
         <button id="saveSet" class="ghost">保存设置</button>
         <button id="clearSet" class="danger">清除设置</button>
       </div>
+
+      <hr style="border:none;border-top:1px dashed var(--border);margin:16px 0 10px;">
+      <h3 style="font-size:14px;margin:6px 0 4px;color:var(--text);">⏰ 定时设置（北京时间）</h3>
+      <div id="schedules"><p class="hint">点下方「读取定时」加载当前设置</p></div>
+      <div class="row" style="margin-top:8px;">
+        <input type="time" id="newTime" value="17:00">
+        <button id="addTime" class="ghost" style="flex:0 0 auto;width:auto;">添加</button>
+      </div>
+      <div class="btn-row">
+        <button id="loadSched" class="ghost">读取定时</button>
+        <button id="saveSched">保存到仓库</button>
+      </div>
+      <p class="hint">按北京时间设置，会自动换算成 UTC 写入工作流。保存后约 1 分钟生效。</p>
     </details>
   </div>
 
@@ -142,20 +155,6 @@
     </div>
     <button id="saveTasks" style="margin-top:8px;">💾 保存到仓库（覆盖 tasks.json）</button>
     <p class="hint">只需填备注名和网址；若内容在 iframe 里会自动识别并完整打印。</p>
-  </div>
-
-  <div class="card">
-    <h2>⏰ 定时设置（北京时间）</h2>
-    <div id="schedules"><p class="hint">点「读取定时」加载当前设置</p></div>
-    <div class="row" style="margin-top:8px;">
-      <input type="time" id="newTime" value="17:00">
-      <button id="addTime" class="ghost" style="flex:0 0 auto;width:auto;">添加</button>
-    </div>
-    <div class="btn-row">
-      <button id="loadSched" class="ghost">读取定时</button>
-      <button id="saveSched">保存到仓库</button>
-    </div>
-    <p class="hint">按北京时间设置，会自动换算成 UTC 写入工作流。保存后约 1 分钟生效。</p>
   </div>
 
   <div class="card">
@@ -250,7 +249,6 @@ async function gh(method, path, body) {
 let currentSha = null;
 let tasks = [];
 let selected = new Set();
-let tasksCollapsed = true;
 
 function taskKey(t) { return (t.name || '') + '||' + (t.url || ''); }
 function foldHtml(scope, count, label, bodyHtml, collapsed) {
@@ -304,16 +302,13 @@ function renderTasks() {
       <input type="text" data-i="${i}" data-k="url" placeholder="网址 https://..." value="${esc(t.url || '')}">
     </div>
   `).join('');
-  box.innerHTML = tasks.length >= 2 ? foldHtml('tasks', tasks.length, '定时任务', inner, tasksCollapsed) : inner;
+  box.innerHTML = inner;
   box.querySelectorAll('input').forEach(inp => {
     inp.addEventListener('input', onEdit);
     inp.addEventListener('change', onEdit);
   });
   box.querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => {
     tasks.splice(+b.dataset.del, 1); renderTasks();
-  }));
-  box.querySelectorAll('[data-fold-toggle]').forEach(h => h.addEventListener('click', () => {
-    tasksCollapsed = !tasksCollapsed; renderTasks();
   }));
   renderRunCards();
 }
