@@ -96,7 +96,7 @@ jobs:
           git -C "$DEST" config user.name "github-actions[bot]"
           git -C "$DEST" config user.email "github-actions[bot]@users.noreply.github.com"
           # 只保留最近 1 次旧目录，加上本次共 2 次（jsDelivr 单分支上限 50MB，超出会导致全部 404）
-          (cd "$DEST" && ls -d run-* 2>/dev/null | sort -t- -k2 -nr | tail -n +3 | xargs -r rm -rf) || true
+          (cd "$DEST" && ls -d run-* 2>/dev/null | sort -t- -k2 -nr | tail -n +2 | xargs -r rm -rf) || true
           rm -rf "$DEST/run-${GITHUB_RUN_ID}"
           mkdir -p "$DEST/run-${GITHUB_RUN_ID}"
           cp "previews/run-${GITHUB_RUN_ID}/"* "$DEST/run-${GITHUB_RUN_ID}/"
