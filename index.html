@@ -132,16 +132,11 @@
 
   <div class="card">
     <h2>⚙️ 设置 <button id="testConn" class="ghost" style="width:auto;padding:6px 12px;font-size:13px;">测试连接</button></h2>
+    <button id="readAll" style="margin-bottom:8px;">🔄 一键读取（定时任务 + 定时设置）</button>
     <details>
       <summary>展开 / 收起</summary>
       <label>GitHub Token（需要 repo + workflow 权限）</label>
       <input type="password" id="token" placeholder="ghp_...">
-      <div class="row">
-        <div><label>仓库所有者</label><input type="text" id="owner" value="Kei-cobe"></div>
-        <div><label>仓库名</label><input type="text" id="repo" value="GetHtml2Pdf"></div>
-      </div>
-      <label>工作流文件名</label>
-      <input type="text" id="workflow" value="pdf-delivery.yml">
       <label>推送方式（取消勾选即不再推送）</label>
       <div class="chk-row">
         <label class="chk"><input type="checkbox" id="chEmail" checked><span>QQ 邮箱</span></label>
@@ -250,25 +245,20 @@ function b64decodeUnicode(b64) {
   return new TextDecoder().decode(bytes);
 }
 
+const OWNER = 'Kei-cobe', REPO = 'GetHtml2Pdf', WORKFLOW = 'pdf-delivery.yml';  // 仓库信息硬编码，不再前台展示
 function cfg() {
   return {
     token: $('token').value.trim(),
-    owner: $('owner').value.trim(),
-    repo: $('repo').value.trim(),
-    workflow: $('workflow').value.trim(),
+    owner: OWNER,
+    repo: REPO,
+    workflow: WORKFLOW,
   };
 }
 function loadCfg() {
   if (LS.get('token')) $('token').value = LS.get('token');
-  if (LS.get('owner')) $('owner').value = LS.get('owner');
-  if (LS.get('repo')) $('repo').value = LS.get('repo');
-  if (LS.get('workflow')) $('workflow').value = LS.get('workflow');
 }
 function saveCfg() {
   LS.set('token', $('token').value.trim());
-  LS.set('owner', $('owner').value.trim());
-  LS.set('repo', $('repo').value.trim());
-  LS.set('workflow', $('workflow').value.trim());
   log('设置已保存在本机', 'ok-text');
 }
 
@@ -951,10 +941,20 @@ function scheduleChannelSave() {
 loadCfg();
 loadRecords();
 loadDeletedRuns().catch(() => {}).finally(() => renderRunStatus());
+// 一键读取：定时任务 + 定时设置 + 推送方式（不读取「今日完整任务列表」），全程加载圈
+async function readAll() {
+  if (!$('token').value.trim()) { log('请先在「设置」里填写 GitHub Token', 'err-text'); return; }
+  showLoading();
+  try {
+    const results = await Promise.allSettled([loadTasksData(), loadSchedule(), loadChannels()]);
+    const errs = results.filter(r => r.status === 'rejected');
+    if (errs.length) log('部分读取失败：' + (errs[0].reason && errs[0].reason.message || errs[0].reason), 'err-text');
+    else log('一键读取完成：任务 ' + tasks.length + ' 个，定时 ' + (schedules.length ? schedules.join('、') : '无'), 'ok-text');
+  } finally { hideLoading(); }
+}
+$('readAll').onclick = readAll;
 if (LS.get('token')) {
-  loadTasksData().catch(() => {});
-  loadSchedule().catch(() => {});
-  loadChannels().catch(() => {});
+  readAll();  // 已有 Token 的浏览器进入时自动执行一遍一键读取
   pollStatus();
   startPolling();
 }
