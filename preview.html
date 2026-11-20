@@ -19,9 +19,16 @@
   .task h2 { font-size: 14px; margin: 0; padding: 11px 13px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
   .task h2 span { color: var(--muted); font-weight: 400; font-size: 12px; flex: 0 0 auto; }
   .task img { display: block; width: 100%; height: auto; background: #fff; border-top: 1px solid #f0f2f4; }
-  .spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid #d7dbe0; border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+  /* 全屏居中加载遮罩 */
+  .loading-mask { position: fixed; inset: 0; background: rgba(255,255,255,.82); display: flex; align-items: center; justify-content: center; z-index: 9999; }
+  .loading-mask.hide { display: none; }
+  .spinner { width: 46px; height: 46px; border: 4px solid #dbe3f0; border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 14px; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .center { text-align: center; padding: 26px 12px; color: var(--muted); }
+  .loading-text { font-size: 16px; font-weight: 600; color: var(--text); letter-spacing: 1px; text-align: center; }
+  .dot { animation: blink 1.2s infinite; }
+  .dot:nth-child(2) { animation-delay: .2s; }
+  .dot:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 100% { opacity: .15; } 50% { opacity: 1; } }
 </style>
 </head>
 <body>
@@ -29,8 +36,13 @@
   <a href="./">← 返回</a>
   <h1>🖼 网页图片预览</h1>
 </div>
-<div class="wrap" id="root">
-  <div class="center"><span class="spinner"></span> 正在读取预览图…</div>
+<div class="wrap" id="root"></div>
+
+<div class="loading-mask" id="loading">
+  <div>
+    <div class="spinner"></div>
+    <div class="loading-text">请稍后<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div>
+  </div>
 </div>
 
 <script>
@@ -42,6 +54,9 @@ const qs = new URLSearchParams(location.search);
 const runId = qs.get('run') || '';
 const filterName = qs.get('name') || '';
 const root = document.getElementById('root');
+const loadingEl = document.getElementById('loading');
+
+function hideLoading() { loadingEl.classList.add('hide'); }
 
 function apiHeaders() {
   const headers = { Accept: 'application/vnd.github+json' };
@@ -53,42 +68,33 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 function fail(msg, isErr) {
+  hideLoading();
   root.innerHTML = `<div class="note${isErr ? ' err' : ''}">${esc(msg)}</div>`;
 }
 
 async function main() {
   if (!runId) return fail('缺少运行编号，请从控制台任务列表点击任务名进入。', true);
-  // Release asset 的下载地址匿名可访问，无需 GitHub API（匿名 API 极易 403 限流）
+  // 清单走 API（api.github.com 带 CORS 头）；图片用 Release 直链（<img> 不受 CORS 限制，匿名可下载）。
+  // 注意：不能用 fetch 直接下载 Release 直链——302 到 CDN 后无 CORS 头，浏览器必报 Failed to fetch。
   const dlBase = `https://github.com/${owner}/${repo}/releases/download/preview-${encodeURIComponent(runId)}`;
 
-  let manifest = null;
-  // 优先直接下载 manifest.json asset（新格式，零 API）
+  let manifest;
   try {
-    const res = await fetch(`${dlBase}/manifest.json`);
-    if (res.ok) manifest = await res.json();
-    else if (res.status !== 404) {
-      return fail('读取预览清单失败：HTTP ' + res.status + '，请稍后重试。', true);
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`, { headers: apiHeaders() });
+    if (res.status === 404) {
+      return fail('这次运行没有生成网页预览图：可能抓取任务全部失败，或设置里关闭了「网页图片预览」，或预览图已超过保留期限（最近 6 次）被清理。');
     }
+    if (res.status === 401) {
+      return fail('GitHub Token 已失效（HTTP 401）。请回到控制台，在设置里重新保存有效 Token 后再试。', true);
+    }
+    if (res.status === 403) {
+      return fail('读取预览信息被 GitHub 限流（HTTP 403）。请回到控制台，在设置里保存有效的 GitHub Token 后再试。', true);
+    }
+    if (!res.ok) return fail('读取预览信息失败：HTTP ' + res.status, true);
+    const release = await res.json();
+    manifest = JSON.parse(release.body || '[]');
   } catch (e) {
-    return fail('网络异常，无法读取预览清单：' + e.message, true);
-  }
-
-  // 旧 release 没有 manifest.json asset：回退到 API 读 release body（需要 Token 防限流）
-  if (!manifest) {
-    try {
-      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`, { headers: apiHeaders() });
-      if (res.status === 404) {
-        return fail('这次运行没有生成网页预览图：可能抓取任务全部失败，或设置里关闭了「网页图片预览」，或预览图已超过保留期限（最近 6 次）被清理。');
-      }
-      if (res.status === 403) {
-        return fail('读取预览信息被 GitHub 限流（HTTP 403）。请回到控制台，在设置里保存有效的 GitHub Token 后再试；新产生的预览已无需此步骤。', true);
-      }
-      if (!res.ok) return fail('读取预览信息失败：HTTP ' + res.status, true);
-      const release = await res.json();
-      manifest = JSON.parse(release.body || '[]');
-    } catch (e) {
-      return fail('网络异常，无法读取预览图：' + e.message, true);
-    }
+    return fail('网络异常，无法读取预览清单：' + e.message + '。请检查网络后重试。', true);
   }
 
   if (!Array.isArray(manifest) || !manifest.length) return fail('这次运行没有生成网页预览图。');
@@ -142,6 +148,7 @@ async function main() {
     }
     root.appendChild(box);
   }
+  hideLoading();
 }
 
 main();

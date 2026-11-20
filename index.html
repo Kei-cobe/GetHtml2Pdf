@@ -95,6 +95,16 @@
   #toast.err { background: rgba(193,32,45,.97); }
   #toast .toast-ico { display: block; font-size: 46px; line-height: 1; margin-bottom: 12px; }
   #toast .toast-msg { display: block; font-size: 16px; font-weight: 600; line-height: 1.45; word-break: break-word; }
+  /* 全屏居中加载遮罩 */
+  .loading-mask { position: fixed; inset: 0; background: rgba(255,255,255,.82); display: flex; align-items: center; justify-content: center; z-index: 9999; }
+  .loading-mask.hide { display: none; }
+  .spinner { width: 46px; height: 46px; border: 4px solid #dbe3f0; border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 14px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { font-size: 16px; font-weight: 600; color: var(--text); letter-spacing: 1px; text-align: center; }
+  .dot { animation: blink 1.2s infinite; }
+  .dot:nth-child(2) { animation-delay: .2s; }
+  .dot:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 100% { opacity: .15; } 50% { opacity: 1; } }
 </style>
 </head>
 <body>
@@ -182,6 +192,12 @@
   </div>
 
   <div id="toast"></div>
+  <div class="loading-mask hide" id="loading">
+    <div>
+      <div class="spinner"></div>
+      <div class="loading-text">请稍后<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -588,6 +604,9 @@ async function recordLatestRun() {
   } catch (e) { /* 静默 */ }
 }
 
+function showLoading() { $('loading').classList.remove('hide'); }
+function hideLoading() { $('loading').classList.add('hide'); }
+
 async function dispatch(manual, meta) {
   const key = manual || '__ALL__';
   const now = Date.now();
@@ -601,6 +620,7 @@ async function dispatch(manual, meta) {
     ? manual.split(';').map(s => s.split('|')[0].trim()).filter(Boolean).join(' | ')
     : '全部定时任务');
   const count = (meta && meta.count) || 1;
+  showLoading();
   try {
     await gh('POST', `/actions/workflows/${cfg().workflow}/dispatches`, { ref: 'main', inputs: { tasks: manual || '', label: label } });
     sent.push({ key, ts: now });
@@ -612,6 +632,7 @@ async function dispatch(manual, meta) {
     setTimeout(recordLatestRun, 3000);
     return true;
   } catch (e) { toast(e.message, true); log(e.message, 'err-text'); return false; }
+  finally { hideLoading(); }
 }
 
 $('runAll').onclick = () => {
