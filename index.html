@@ -555,7 +555,7 @@ function renderRunStatus() {
       const parts = r.label.split('|').map(s => s.trim()).filter(Boolean);
       const btns = parts.map(p => {
         const url = `preview.html?run=${encodeURIComponent(r.id)}&name=${encodeURIComponent(p)}`;
-        return `<button type="button" class="st-btn" data-href="${esc(url)}">🖼 ${esc(p)}</button>`;
+        return `<button type="button" class="st-btn" data-href="${esc(url)}">${esc(p)}</button>`;
       }).join('');
       labelHtml = `<div class="st-btns">${btns}</div>`;
     } else {
