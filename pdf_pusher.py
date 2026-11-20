@@ -335,15 +335,18 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
     filename = f"{prefix:02d}.jpg"
     target = target_dir / filename
     await page.evaluate("() => window.scrollTo(0, 0)")
-    viewport_width = int(
-        await page.evaluate(
-            """() => {
-                const se = document.scrollingElement || document.documentElement;
-                return Math.min(2400, Math.ceil(Math.max(
-                    se.scrollWidth, document.body ? document.body.scrollWidth : 0, innerWidth)));
-            }"""
-        )
-    ) or A4_WIDTH_PX
+    viewport_width = A4_WIDTH_PX
+    try:
+        client = await page.context.new_cdp_session(page)
+        layout = await client.send("Page.getLayoutMetrics")
+        size = layout.get("cssContentSize") or layout.get("contentSize") or {}
+        page_w, page_h = int(size.get("width") or 0), int(size.get("height") or 0)
+        if page_w > 0:
+            viewport_width = min(2400, page_w)
+        if page_h > 0:
+            total = min(total, page_h)  # 裁剪区域不能超出 CDP 认定的页面内容，否则报 outside
+    except Exception:
+        pass
 
     # 超高页面一次性截图会触发 Chromium "Unable to encode screenshot"，
     # 因此按固定高度分块截取（每块仍在 2 倍 DPI 下），再纵向拼成一张完整长图。
