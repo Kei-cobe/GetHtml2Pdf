@@ -85,7 +85,7 @@
   .status-row .st-warn { margin-top: 3px; color: #b25e09; font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-time { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
   /* 左滑删除 */
-  .swipe-row { position: relative; overflow: hidden; border-radius: 9px; }
+  .swipe-row { position: relative; overflow: hidden; border-radius: 9px; flex: 0 0 auto; /* 禁止 flex 压缩行高，否则行多时文字被裁断且无法滚动 */ }
   .swipe-del { position: absolute; right: 0; top: 0; bottom: 0; width: 64px; border: 0; background: #d1242f; color: #fff; font-size: 16px; font-weight: 600; cursor: pointer; }
   .swipe-content { position: relative; transition: transform .18s ease; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
   .swipe-row.open .swipe-content { transform: translateX(-64px); }
