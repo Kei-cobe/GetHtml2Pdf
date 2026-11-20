@@ -74,27 +74,49 @@ function fail(msg, isErr) {
 
 async function main() {
   if (!runId) return fail('缺少运行编号，请从控制台任务列表点击任务名进入。', true);
-  // 清单走 API（api.github.com 带 CORS 头）；图片用 Release 直链（<img> 不受 CORS 限制，匿名可下载）。
-  // 注意：不能用 fetch 直接下载 Release 直链——302 到 CDN 后无 CORS 头，浏览器必报 Failed to fetch。
+  // 图床分两级：优先 jsDelivr/raw 镜像（previews 分支，国内可达性好、支持 CORS），
+  // 全部失败再回退 GitHub Release（release-assets 在部分网络下被阻断，仅作兜底）。
   const dlBase = `https://github.com/${owner}/${repo}/releases/download/preview-${encodeURIComponent(runId)}`;
+  const cdnBases = [
+    `https://cdn.jsdelivr.net/gh/${owner}/${repo}@previews/run-${encodeURIComponent(runId)}`,
+    `https://fastly.jsdelivr.net/gh/${owner}/${repo}@previews/run-${encodeURIComponent(runId)}`,
+    `https://gcore.jsdelivr.net/gh/${owner}/${repo}@previews/run-${encodeURIComponent(runId)}`,
+    `https://raw.githubusercontent.com/${owner}/${repo}/previews/run-${encodeURIComponent(runId)}`,
+  ];
 
-  let manifest;
-  try {
-    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`, { headers: apiHeaders() });
-    if (res.status === 404) {
-      return fail('这次运行没有生成网页预览图：可能抓取任务全部失败，或设置里关闭了「网页图片预览」，或预览图已超过保留期限（最近 6 次）被清理。');
+  async function fetchWithTimeout(url, ms) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    try { return await fetch(url, { signal: ctrl.signal }); } finally { clearTimeout(t); }
+  }
+
+  let manifest = null;
+  for (const base of cdnBases) {
+    try {
+      const res = await fetchWithTimeout(`${base}/manifest.json`, 8000);
+      if (res.ok) { manifest = await res.json(); break; }
+    } catch (e) { /* 镜像不可达，尝试下一个 */ }
+  }
+
+  if (!manifest) {
+    // CDN 上没有（旧运行或未迁移），回退 Release API
+    try {
+      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`, { headers: apiHeaders() });
+      if (res.status === 404) {
+        return fail('这次运行没有生成网页预览图：可能抓取任务全部失败，或设置里关闭了「网页图片预览」，或预览图已超过保留期限（最近 6 次）被清理。');
+      }
+      if (res.status === 401) {
+        return fail('GitHub Token 已失效（HTTP 401）。请回到控制台，在设置里重新保存有效 Token 后再试。', true);
+      }
+      if (res.status === 403) {
+        return fail('读取预览信息被 GitHub 限流（HTTP 403）。请回到控制台，在设置里保存有效的 GitHub Token 后再试。', true);
+      }
+      if (!res.ok) return fail('读取预览信息失败：HTTP ' + res.status, true);
+      const release = await res.json();
+      manifest = JSON.parse(release.body || '[]');
+    } catch (e) {
+      return fail('网络异常，无法读取预览清单：' + e.message + '。请检查网络后重试。', true);
     }
-    if (res.status === 401) {
-      return fail('GitHub Token 已失效（HTTP 401）。请回到控制台，在设置里重新保存有效 Token 后再试。', true);
-    }
-    if (res.status === 403) {
-      return fail('读取预览信息被 GitHub 限流（HTTP 403）。请回到控制台，在设置里保存有效的 GitHub Token 后再试。', true);
-    }
-    if (!res.ok) return fail('读取预览信息失败：HTTP ' + res.status, true);
-    const release = await res.json();
-    manifest = JSON.parse(release.body || '[]');
-  } catch (e) {
-    return fail('网络异常，无法读取预览清单：' + e.message + '。请检查网络后重试。', true);
   }
 
   if (!Array.isArray(manifest) || !manifest.length) return fail('这次运行没有生成网页预览图。');
@@ -122,28 +144,31 @@ async function main() {
   for (const item of items) {
     const box = document.createElement('div');
     box.className = 'task';
-    // 新格式：单张长图；旧格式：多段图（兼容）
-    const urls = [];
+    // 新格式：单张长图；旧格式：多段图（兼容）。每张图按 CDN 镜像 → Release 顺序回退。
+    const files = [];
     if (item.image) {
-      urls.push(`${dlBase}/${item.image}`);
+      files.push(item.image);
     } else {
       for (let n = 1; n <= (item.images || 0); n++) {
-        const name = `${String(item.index).padStart(2, '0')}-${String(n).padStart(2, '0')}.jpg`;
-        urls.push(`${dlBase}/${name}`);
+        files.push(`${String(item.index).padStart(2, '0')}-${String(n).padStart(2, '0')}.jpg`);
       }
     }
-    box.innerHTML = `<h2>${esc(item.name)}<span>${item.image ? '长图' : urls.length + ' 张'}</span></h2>`;
-    for (const url of urls) {
+    box.innerHTML = `<h2>${esc(item.name)}<span>${item.image ? '长图' : files.length + ' 张'}</span></h2>`;
+    for (const file of files) {
+      const candidates = [...cdnBases.map(b => `${b}/${file}`), `${dlBase}/${file}`];
       const img = document.createElement('img');
       img.loading = 'lazy';
       img.alt = item.name;
-      img.src = url;
+      let ci = 0;
       img.onerror = () => {
+        ci++;
+        if (ci < candidates.length) { img.src = candidates[ci]; return; }
         const tip = document.createElement('div');
         tip.className = 'note err';
-        tip.textContent = '图片加载失败：' + url.split('/').pop() + '，可能已被清理或网络异常，请返回重试。';
+        tip.textContent = '图片加载失败：' + file + '，可能已被清理或网络异常，请返回重试。';
         img.replaceWith(tip);
       };
+      img.src = candidates[0];
       box.appendChild(img);
     }
     root.appendChild(box);

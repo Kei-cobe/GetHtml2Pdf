@@ -71,6 +71,36 @@ jobs:
             --jq '[.[] | select(.tagName | startswith("preview-"))] | sort_by(.createdAt) | reverse | .[6:] | .[].tagName' \
             | xargs -r -I{} gh release delete {} --yes --cleanup-tag
 
+      - name: 推送预览图到 previews 分支（CDN 加速）
+        if: hashFiles('previews/**') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          DEST=/tmp/previews-branch
+          if git ls-remote --heads "$REPO_URL" previews | grep -q .; then
+            git clone --depth 1 --branch previews "$REPO_URL" "$DEST"
+          else
+            mkdir -p "$DEST"
+            git -C "$DEST" init -q
+            git -C "$DEST" checkout -q --orphan previews
+          fi
+          git -C "$DEST" config user.name "github-actions[bot]"
+          git -C "$DEST" config user.email "github-actions[bot]@users.noreply.github.com"
+          # 只保留最近 5 次旧目录，加上本次共 6 次（目录名含 run id，按数字倒序）
+          (cd "$DEST" && ls -d run-* 2>/dev/null | sort -t- -k2 -nr | tail -n +6 | xargs -r rm -rf) || true
+          rm -rf "$DEST/run-${GITHUB_RUN_ID}"
+          mkdir -p "$DEST/run-${GITHUB_RUN_ID}"
+          cp "previews/run-${GITHUB_RUN_ID}/"* "$DEST/run-${GITHUB_RUN_ID}/"
+          git -C "$DEST" add -A
+          if git -C "$DEST" diff --cached --quiet; then
+            echo "无变更，跳过推送"
+          else
+            git -C "$DEST" commit -q -m "预览图 run-${GITHUB_RUN_ID}"
+            git -C "$DEST" push -q "$REPO_URL" previews
+          fi
+
       - name: 备份 PDF 和运行产物
         if: always()
         uses: actions/upload-artifact@v4
