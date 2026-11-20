@@ -432,7 +432,10 @@ async def capture_pdf(
                 filename = await save_preview_image(page, preview_dir, preview_index)
                 logging.info("网页预览长图已生成：%s", filename or "无")
             except Exception as exc:
-                logging.warning("网页预览图生成失败：%s", humanize_failure(exc))
+                logging.warning(
+                    "网页预览图生成失败：%s | %s: %s",
+                    humanize_failure(exc), type(exc).__name__, repr(exc)[:400],
+                )
         return CaptureResult(task, pdf_path, page.url)
     finally:
         await context.close()
