@@ -65,6 +65,8 @@
   .status-row { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: #fafbfc; font-size: 13px; }
   .status-row .st-main { flex: 1; min-width: 0; }
   .status-row .st-label { white-space: normal; word-break: break-word; line-height: 1.35; }
+  .status-row .st-link { display: inline-block; color: #1f6feb; text-decoration: none; border-bottom: 1px dashed currentColor; }
+  .status-row .st-link:active { opacity: .6; }
   .status-row .st-err { margin-top: 3px; color: var(--danger); font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-warn { margin-top: 3px; color: #b25e09; font-size: 12px; white-space: normal; word-break: break-word; line-height: 1.35; }
   .status-row .st-time { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
@@ -105,7 +107,7 @@
       <div class="chk-row">
         <label class="chk"><input type="checkbox" id="chEmail" checked><span>QQ 邮箱</span></label>
         <label class="chk"><input type="checkbox" id="chWecom" checked><span>企业微信</span></label>
-        <label class="chk"><input type="checkbox" id="chPushplus" checked><span>微信（PushPlus）</span></label>
+        <label class="chk"><input type="checkbox" id="chPreview" checked><span>网页图片预览</span></label>
       </div>
       <p class="hint" id="chHint">修改后 5 秒自动保存到仓库</p>
       <div class="btn-row">
@@ -153,7 +155,7 @@
     </div>
     <button id="runSelected" style="margin-top:8px;">🎯 执行选中（<span id="selCount">0</span>）</button>
     <button id="runAll" class="ghost" style="margin-top:8px;">执行全部定时任务</button>
-    <p class="hint">点击卡片选中/取消，支持多选；选中后点执行，PDF 会发到你的邮箱 / 企业微信 / 微信。</p>
+    <p class="hint">点击卡片选中/取消，支持多选；选中后点执行，PDF 会发到你的邮箱 / 企业微信，并按设置生成网页图片预览。</p>
   </div>
 
   <div class="card">
@@ -522,7 +524,10 @@ function renderRunStatus() {
     const reasonHtml = reason ? `<div class="st-err">${esc(reason)}</div>` : '';
     const warn = warnText(r);
     const warnHtml = warn ? `<div class="st-warn">${esc(warn)}</div>` : '';
-    return `<div class="status-row">${icon}<div class="st-main"><div class="st-label">${esc(r.label)}</div>${reasonHtml}${warnHtml}</div><span class="st-time">${time}</span></div>`;
+    const labelHtml = (r.status === 'completed' && r.conclusion === 'success')
+      ? `<a class="st-label st-link" href="preview.html?run=${encodeURIComponent(r.id)}">🖼 ${esc(r.label)}</a>`
+      : `<div class="st-label">${esc(r.label)}</div>`;
+    return `<div class="status-row">${icon}<div class="st-main">${labelHtml}${reasonHtml}${warnHtml}</div><span class="st-time">${time}</span></div>`;
   }).join('') + '</div>';
 }
 
@@ -698,12 +703,12 @@ let channelsSha = null;
 let channelTimer = null;
 
 function readChannelBoxes() {
-  return { email: $('chEmail').checked, wecom: $('chWecom').checked, pushplus: $('chPushplus').checked };
+  return { email: $('chEmail').checked, wecom: $('chWecom').checked, preview: $('chPreview').checked };
 }
 function applyChannels(data) {
   $('chEmail').checked = data.email !== false;
   $('chWecom').checked = data.wecom !== false;
-  $('chPushplus').checked = data.pushplus !== false;
+  $('chPreview').checked = data.preview !== false;
 }
 async function loadChannels() {
   if (!LS.get('token')) return;
@@ -737,7 +742,7 @@ function scheduleChannelSave() {
   $('chHint').textContent = '5 秒后自动保存…';
   channelTimer = setTimeout(saveChannels, 5000);
 }
-['chEmail', 'chWecom', 'chPushplus'].forEach(id => $(id).addEventListener('change', scheduleChannelSave));
+['chEmail', 'chWecom', 'chPreview'].forEach(id => $(id).addEventListener('change', scheduleChannelSave));
 
 loadCfg();
 loadRecords();

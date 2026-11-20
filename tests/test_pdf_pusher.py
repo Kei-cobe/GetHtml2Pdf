@@ -16,8 +16,6 @@ from pdf_pusher import (  # noqa: E402
     parse_manual_tasks,
     safe_pdf_path,
     same_origin,
-    send_pushplus,
-    upload_public,
 )
 
 
@@ -88,69 +86,3 @@ class TaskTests(unittest.TestCase):
         attachments = list(message.iter_attachments())
         self.assertEqual(len(attachments), 1)
         self.assertEqual(attachments[0].get_filename(), "test.pdf")
-
-
-class DeliveryTests(unittest.TestCase):
-    def _make_result(self, directory):
-        pdf_path = Path(directory) / "x.pdf"
-        pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
-        return CaptureResult(Task("测试", "https://example.com"), pdf_path, "https://example.com")
-
-    def test_send_pushplus_payload(self):
-        with tempfile.TemporaryDirectory() as directory:
-            result = self._make_result(directory)
-            with mock.patch.dict(os.environ, {"PUSHPLUS_TOKEN": "tok"}, clear=False), mock.patch(
-                "pdf_pusher.requests.post"
-            ) as post:
-                post.return_value.status_code = 200
-                post.return_value.json.return_value = {"code": 200}
-                send_pushplus(result, "https://files.catbox.moe/abc.pdf")
-        _, kwargs = post.call_args
-        body = kwargs["json"]
-        self.assertEqual(body["token"], "tok")
-        self.assertEqual(body["template"], "markdown")
-        self.assertEqual(body["title"], "[网页 PDF] 测试")
-        self.assertIn("https://files.catbox.moe/abc.pdf", body["content"])
-
-    def test_send_pushplus_raises_on_error(self):
-        with tempfile.TemporaryDirectory() as directory:
-            result = self._make_result(directory)
-            with mock.patch.dict(os.environ, {"PUSHPLUS_TOKEN": "tok"}), mock.patch(
-                "pdf_pusher.requests.post"
-            ) as post:
-                post.return_value.status_code = 200
-                post.return_value.json.return_value = {"code": 901, "msg": "token 无效"}
-                with self.assertRaises(RuntimeError):
-                    send_pushplus(result, None)
-
-    def test_upload_public_prefers_catbox(self):
-        with tempfile.TemporaryDirectory() as directory:
-            pdf_path = Path(directory) / "x.pdf"
-            pdf_path.write_bytes(b"x")
-            with mock.patch.dict(os.environ, {"PUBLIC_UPLOAD": "1"}), mock.patch(
-                "pdf_pusher._upload_catbox", return_value="https://files.catbox.moe/a.pdf"
-            ) as catbox, mock.patch("pdf_pusher._upload_0x0") as zero:
-                url = upload_public(pdf_path)
-        self.assertEqual(url, "https://files.catbox.moe/a.pdf")
-        catbox.assert_called_once()
-        zero.assert_not_called()
-
-    def test_upload_public_falls_back_to_0x0(self):
-        with tempfile.TemporaryDirectory() as directory:
-            pdf_path = Path(directory) / "x.pdf"
-            pdf_path.write_bytes(b"x")
-            with mock.patch("pdf_pusher._upload_catbox", return_value=None), mock.patch(
-                "pdf_pusher._upload_0x0", return_value="https://0x0.st/abc.pdf"
-            ):
-                self.assertEqual(upload_public(pdf_path), "https://0x0.st/abc.pdf")
-
-    def test_upload_public_disabled(self):
-        with tempfile.TemporaryDirectory() as directory:
-            pdf_path = Path(directory) / "x.pdf"
-            pdf_path.write_bytes(b"x")
-            with mock.patch.dict(os.environ, {"PUBLIC_UPLOAD": "0"}):
-                self.assertIsNone(upload_public(pdf_path))
-
-
-if __name__ == "__main__":
-    unittest.main()

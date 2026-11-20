@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f6f8">
+<title>网页图片预览</title>
+<style>
+  :root { color-scheme: light; --bg: #f5f6f8; --card: #fff; --text: #1f2328; --muted: #6b7280; --border: #e3e6ea; --accent: #1f6feb; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; padding: 0 0 28px; }
+  .top { position: sticky; top: 0; z-index: 9; display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: rgba(245,246,248,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+  .top a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .top h1 { font-size: 16px; margin: 0; flex: 1; text-align: center; }
+  .wrap { padding: 12px 12px 0; max-width: 720px; margin: 0 auto; }
+  .note { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  .note.err { color: #c1202d; }
+  .task { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 14px; }
+  .task h2 { font-size: 14px; margin: 0; padding: 11px 13px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
+  .task h2 span { color: var(--muted); font-weight: 400; font-size: 12px; flex: 0 0 auto; }
+  .task img { display: block; width: 100%; height: auto; background: #fff; border-top: 1px solid #f0f2f4; }
+  .spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid #d7dbe0; border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .center { text-align: center; padding: 26px 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="top">
+  <a href="./">← 返回</a>
+  <h1>🖼 网页图片预览</h1>
+</div>
+<div class="wrap" id="root">
+  <div class="center"><span class="spinner"></span> 正在读取预览图…</div>
+</div>
+
+<script>
+const LS = { get: (k) => localStorage.getItem('pdf_ctrl_' + k) };
+const owner = (LS.get('owner') || 'Kei-cobe').trim();
+const repo = (LS.get('repo') || 'GetHtml2Pdf').trim();
+const runId = new URLSearchParams(location.search).get('run') || '';
+const root = document.getElementById('root');
+
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function fail(msg, isErr) {
+  root.innerHTML = `<div class="note${isErr ? ' err' : ''}">${esc(msg)}</div>`;
+}
+
+async function main() {
+  if (!runId) return fail('缺少运行编号，请从控制台任务列表点击任务名进入。', true);
+  let release;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`);
+    if (res.status === 404) {
+      return fail('这次运行没有生成网页预览图：可能抓取任务全部失败，或设置里关闭了「网页图片预览」，或预览图已超过保留期限（最近 6 次）被清理。');
+    }
+    if (!res.ok) return fail('读取预览信息失败：HTTP ' + res.status, true);
+    release = await res.json();
+  } catch (e) {
+    return fail('网络异常，无法读取预览图：' + e.message, true);
+  }
+
+  const assets = {};
+  for (const a of release.assets || []) assets[a.name] = a.browser_download_url;
+  if (!assets['manifest.json']) return fail('预览图清单缺失，本次运行可能未生成图片。', true);
+
+  let manifest = [];
+  try {
+    const res = await fetch(assets['manifest.json']);
+    manifest = await res.json();
+  } catch (e) {
+    return fail('读取预览清单失败：' + e.message, true);
+  }
+  if (!Array.isArray(manifest) || !manifest.length) return fail('这次运行没有生成网页预览图。');
+
+  root.innerHTML = '';
+  for (const item of manifest) {
+    const box = document.createElement('div');
+    box.className = 'task';
+    const images = [];
+    for (let n = 1; n <= (item.images || 0); n++) {
+      const name = `${String(item.index).padStart(2, '0')}-${String(n).padStart(2, '0')}.jpg`;
+      if (assets[name]) images.push(assets[name]);
+    }
+    box.innerHTML = `<h2>${esc(item.name)}<span>${images.length} 张</span></h2>`;
+    for (const url of images) {
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = item.name;
+      img.src = url;
+      box.appendChild(img);
+    }
+    root.appendChild(box);
+  }
+}
+
+main();
+</script>
+</body>
+</html>

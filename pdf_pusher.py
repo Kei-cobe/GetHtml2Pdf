@@ -96,8 +96,12 @@ def load_tasks(path: Path, only_enabled: bool = True) -> list[Task]:
     return tasks
 
 
+def safe_name(text: str, limit: int = 60) -> str:
+    return re.sub(r"[\\/:*?\"<>|\s]+", "-", text).strip("-._")[:limit] or "webpage"
+
+
 def safe_pdf_path(output_dir: Path, task: Task) -> Path:
-    name = re.sub(r"[\\/:*?\"<>|\s]+", "-", task.name).strip("-._")[:60] or "webpage"
+    name = safe_name(task.name)
     timestamp = datetime.now(TIMEZONE).strftime("%Y%m%d-%H%M%S")
     digest = hashlib.sha1(task.url.encode("utf-8")).hexdigest()[:8]
     return output_dir / f"{name}-{timestamp}-{digest}.pdf"
@@ -278,18 +282,46 @@ A4_WIDTH_MM = 210
 A4_WIDTH_PX = round(A4_WIDTH_MM / 25.4 * 96)  # 与 A4 纸宽 1:1 对应的 CSS 像素
 MAX_PDF_HEIGHT_IN = 200.0  # Chromium 单页高度上限
 MIN_PDF_SCALE = 0.1
+PREVIEW_SEGMENT_PX = 2200  # 网页预览图每一段的高度
+
+
+def page_height_js() -> str:
+    return """() => {
+        const se = document.scrollingElement || document.documentElement;
+        const body = document.body;
+        const h = Math.max(se ? se.scrollHeight : 0, body ? body.scrollHeight : 0);
+        return { height: Math.max(1, Math.ceil(h)) };
+    }"""
+
+
+async def save_preview_images(page: Any, target_dir: Path, prefix: int, max_segments: int = 40) -> int:
+    """把整页滚动截成多张 JPG，供手机端浏览器直接查看（不依赖 PDF 阅读器）。"""
+    metrics = await page.evaluate(page_height_js())
+    total = int(metrics.get("height") or 0)
+    if total <= 0:
+        return 0
+    await page.set_viewport_size(
+        {"width": A4_WIDTH_PX, "height": min(PREVIEW_SEGMENT_PX, total)}
+    )
+    target_dir.mkdir(parents=True, exist_ok=True)
+    saved = 0
+    offset = 0
+    while offset < total and saved < max_segments:
+        await page.evaluate("(y) => window.scrollTo(0, y)", offset)
+        await page.wait_for_timeout(150)
+        await page.screenshot(
+            path=str(target_dir / f"{prefix:02d}-{saved + 1:02d}.jpg"),
+            type="jpeg",
+            quality=72,
+        )
+        saved += 1
+        offset += PREVIEW_SEGMENT_PX
+    return saved
 
 
 async def print_long_pdf(page: Any, pdf_path: Path) -> None:
     """把整页内容输出为一张不分页的长条 PDF。"""
-    metrics = await page.evaluate(
-        """() => {
-            const se = document.scrollingElement || document.documentElement;
-            const body = document.body;
-            const h = Math.max(se ? se.scrollHeight : 0, body ? body.scrollHeight : 0);
-            return { height: Math.max(1, Math.ceil(h)) };
-        }"""
-    )
+    metrics = await page.evaluate(page_height_js())
     content_px = int(metrics.get("height") or 0)
     height_in = content_px / 96.0
     scale = 1.0
@@ -330,7 +362,13 @@ async def print_paginated_pdf(page: Any, pdf_path: Path) -> None:
     )
 
 
-async def capture_pdf(browser: Any, task: Task, output_dir: Path) -> CaptureResult:
+async def capture_pdf(
+    browser: Any,
+    task: Task,
+    output_dir: Path,
+    preview_dir: Path | None = None,
+    preview_index: int = 0,
+) -> CaptureResult:
     context = await browser.new_context(
         viewport={"width": A4_WIDTH_PX, "height": 1200},
         locale="zh-CN",
@@ -353,6 +391,12 @@ async def capture_pdf(browser: Any, task: Task, output_dir: Path) -> CaptureResu
         if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
             raise RuntimeError("PDF 文件未生成")
         logging.info("PDF 已生成：%s（%.1f MB）", pdf_path.name, pdf_path.stat().st_size / 1_048_576)
+        if preview_dir is not None:
+            try:
+                count = await save_preview_images(page, preview_dir, preview_index)
+                logging.info("网页预览图已生成：%d 张", count)
+            except Exception as exc:
+                logging.warning("网页预览图生成失败：%s", humanize_failure(exc))
         return CaptureResult(task, pdf_path, page.url)
     finally:
         await context.close()
@@ -500,77 +544,8 @@ def send_wecom_pdf(result: CaptureResult) -> None:
         logging.info("企业微信下载通知已发送")
 
 
-def _upload_catbox(pdf_path: Path) -> str | None:
-    with pdf_path.open("rb") as file:
-        response = requests.post(
-            "https://catbox.moe/user/api.php",
-            data={"reqtype": "fileupload"},
-            files={"fileToUpload": (pdf_path.name, file, "application/pdf")},
-            timeout=120,
-        )
-    url = response.text.strip()
-    return url if url.startswith("http") else None
-
-
-def _upload_0x0(pdf_path: Path) -> str | None:
-    with pdf_path.open("rb") as file:
-        response = requests.post(
-            "https://0x0.st",
-            files={"file": (pdf_path.name, file, "application/pdf")},
-            timeout=120,
-        )
-    url = response.text.strip()
-    return url if url.startswith("http") else None
-
-
-def upload_public(pdf_path: Path) -> str | None:
-    """把 PDF 传到可公开访问的临时托管，返回直链；全部失败返回 None。"""
-    if os.getenv("PUBLIC_UPLOAD", "1").lower() not in {"1", "true", "yes", "on"}:
-        return None
-    for uploader in (_upload_catbox, _upload_0x0):
-        try:
-            url = uploader(pdf_path)
-        except requests.RequestException as exc:
-            logging.warning("公开上传失败（%s）：%s", uploader.__name__, type(exc).__name__)
-            continue
-        if url:
-            logging.info("PDF 已上传至公开地址：%s", url)
-            return url
-    return None
-
-
-def send_pushplus(result: CaptureResult, public_url: str | None) -> None:
-    token = os.environ["PUSHPLUS_TOKEN"]
-    size_mb = result.pdf_path.stat().st_size / 1_048_576
-    link = public_url or github_run_url()
-    link_md = f"[点此在微信中打开 / 下载 PDF]({link})" if link else "PDF 已随邮件和企业微信发送"
-    content = (
-        f"**网页 PDF 已生成**\n\n"
-        f"- 任务：{result.task.name}\n"
-        f"- 大小：{size_mb:.1f} MB\n"
-        f"- 来源：{result.task.url}\n\n"
-        f"{link_md}\n\n"
-        f"完整版 PDF 同时已发送至 QQ 邮箱和企业微信群。"
-    )
-    payload = {
-        "token": token,
-        "title": f"[网页 PDF] {result.task.name}",
-        "content": content,
-        "template": "markdown",
-    }
-    response = requests.post("https://www.pushplus.plus/send", json=payload, timeout=60)
-    try:
-        data = response.json()
-    except ValueError:
-        raise RuntimeError(f"PushPlus 返回 HTTP {response.status_code}") from None
-    if response.status_code != 200 or data.get("code") != 200:
-        detail = str(data.get("msg") or f"HTTP {response.status_code}")[:200]
-        raise RuntimeError(f"PushPlus 接口错误：{detail}")
-    logging.info("微信（PushPlus）推送已发送")
-
-
-DEFAULT_CHANNELS = {"email": True, "wecom": True, "pushplus": True}
-CHANNEL_NAMES = {"email": "QQ 邮箱", "wecom": "企业微信", "pushplus": "微信（PushPlus）"}
+DEFAULT_CHANNELS = {"email": True, "wecom": True, "preview": True}
+CHANNEL_NAMES = {"email": "QQ 邮箱", "wecom": "企业微信", "preview": "网页图片预览"}
 
 
 def load_channels(config_path: Path) -> dict:
@@ -609,19 +584,9 @@ def deliver_pdf(result: CaptureResult, channels: dict | None = None) -> list[str
             send_wecom_pdf(result)
         except RuntimeError as exc:
             errors.append(str(exc))
-    if os.getenv("PUSHPLUS_TOKEN") and channels.get("pushplus", True):
-        try:
-            public_url = upload_public(result.pdf_path)
-            send_pushplus(result, public_url)
-        except RuntimeError as exc:
-            errors.append(str(exc))
     if not any(channels.get(name, True) for name in channels):
         logging.info("推送方式已在控制台全部关闭，仅保留 PDF 文件")
-    elif (
-        not configured_email
-        and not os.getenv("WECOM_WEBHOOK_KEY")
-        and not os.getenv("PUSHPLUS_TOKEN")
-    ):
+    elif not configured_email and not os.getenv("WECOM_WEBHOOK_KEY"):
         logging.info("未配置推送 Secrets，仅保留 PDF 文件")
     return errors
 
@@ -653,7 +618,6 @@ def humanize_failure(exc: BaseException) -> str:
         ("bad address syntax", "收件邮箱格式错误"),
         ("smtp", "邮箱发送失败"),
         ("wecom", "企业微信推送失败"),
-        ("pushplus", "微信推送失败"),
     ]
     for needle, message in rules:
         if needle in raw:
@@ -661,16 +625,22 @@ def humanize_failure(exc: BaseException) -> str:
     return "抓取时出现异常"
 
 
-async def capture_with_retry(browser: Any, task: Task, output_dir: Path) -> CaptureResult:
+async def capture_with_retry(
+    browser: Any,
+    task: Task,
+    output_dir: Path,
+    preview_dir: Path | None = None,
+    preview_index: int = 0,
+) -> CaptureResult:
     """单个任务失败后重试一次，降低偶发超时的影响。"""
     try:
-        return await capture_pdf(browser, task, output_dir)
+        return await capture_pdf(browser, task, output_dir, preview_dir, preview_index)
     except Exception as exc:
         logging.warning(
             "任务「%s」首次失败（%s），10 秒后重试一次", task.name, humanize_failure(exc)
         )
         await asyncio.sleep(10)
-        return await capture_pdf(browser, task, output_dir)
+        return await capture_pdf(browser, task, output_dir, preview_dir, preview_index)
 
 
 async def async_main() -> int:
@@ -694,13 +664,28 @@ async def async_main() -> int:
 
     failures = []
     pdf_count = 0
+    preview_root = None
+    preview_manifest = []
+    if channels.get("preview", True):
+        run_id = os.getenv("GITHUB_RUN_ID") or datetime.now(TIMEZONE).strftime("local-%Y%m%d-%H%M%S")
+        preview_root = Path(__file__).with_name("previews") / f"run-{run_id}"
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True, args=["--disable-dev-shm-usage"])
         try:
-            for task in tasks:
+            for index, task in enumerate(tasks, start=1):
                 try:
-                    result = await capture_with_retry(browser, task, args.output_dir)
+                    result = await capture_with_retry(
+                        browser,
+                        task,
+                        args.output_dir,
+                        preview_root,
+                        index,
+                    )
                     pdf_count += 1
+                    if preview_root is not None:
+                        shots = len(list(preview_root.glob(f"{index:02d}-*.jpg")))
+                        if shots:
+                            preview_manifest.append({"index": index, "name": task.name, "images": shots})
                     if not args.no_push:
                         failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result, channels))
                 except Exception as exc:
@@ -708,6 +693,12 @@ async def async_main() -> int:
                     failures.append(f"{task.name}：{humanize_failure(exc)}")
         finally:
             await browser.close()
+
+    if preview_root is not None and preview_manifest:
+        (preview_root / "manifest.json").write_text(
+            json.dumps(preview_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        logging.info("网页预览图清单已写入：%d 个任务", len(preview_manifest))
 
     if failures:
         for item in failures:

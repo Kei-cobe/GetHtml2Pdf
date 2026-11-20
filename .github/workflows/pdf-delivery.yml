@@ -17,7 +17,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: webpage-pdf-delivery
@@ -52,10 +52,22 @@ jobs:
           QQ_SMTP_AUTH_CODE: ${{ secrets.QQ_SMTP_AUTH_CODE }}
           QQ_EMAIL_TO: ${{ secrets.QQ_EMAIL_TO }}
           WECOM_WEBHOOK_KEY: ${{ secrets.WECOM_WEBHOOK_KEY }}
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          # 设为 0 可关闭“把 PDF 传到公开直链”（微信推送仍会发，只是不带直链）
-          PUBLIC_UPLOAD: "1"
         run: python pdf_pusher.py --config tasks.json --output-dir output
+
+      - name: 发布网页预览图
+        if: hashFiles('previews/**') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="preview-${GITHUB_RUN_ID}"
+          gh release create "$TAG" --title "预览图 ${GITHUB_RUN_ID}" --notes "网页图片预览" >/dev/null 2>&1 || true
+          find previews -type f \( -name '*.jpg' -o -name 'manifest.json' \) -print0 \
+            | xargs -0 -r -n 20 gh release upload "$TAG" --clobber
+          # 只保留最近 6 次预览发布，避免占用过多空间
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("preview-"))] | sort_by(.createdAt) | reverse | .[6:] | .[].tagName' \
+            | xargs -r -I{} gh release delete {} --yes --cleanup-tag
 
       - name: 备份 PDF 和运行产物
         if: always()
