@@ -29,12 +29,6 @@
       "url": "https://680444.3490a.app:3137/news/app/am.html",
       "frame_selector": "",
       "enabled": true
-    },
-    {
-      "name": "测试网址",
-      "url": "https://www.icourse163.org/",
-      "frame_selector": "",
-      "enabled": true
     }
   ]
 }
