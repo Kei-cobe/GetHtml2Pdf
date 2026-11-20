@@ -295,8 +295,8 @@ def page_height_js() -> str:
     }"""
 
 
-def trim_image_whitespace(path: Path, padding: int = 12, threshold: int = 18) -> None:
-    """裁掉截图四周的空白边并补回少量边距。
+def trim_image_whitespace(path: Path, padding: int = 12, threshold: int = 18) -> bool:
+    """裁掉截图四周的空白边并补回少量边距，返回是否发生了裁剪。
 
     网页内容未占满视口时，截图右侧/底部会有大片白边（内容居中或 body 被撑高），
     直接展示会导致手机上图片右侧空白、底部拖着长白条。
@@ -308,18 +308,19 @@ def trim_image_whitespace(path: Path, padding: int = 12, threshold: int = 18) ->
     )
     bbox = diff.getbbox()
     if not bbox:
-        return  # 全白图，保留原样
+        return False  # 全白图，保留原样
     left = max(0, bbox[0] - padding)
     top = max(0, bbox[1] - padding)
     right = min(im.width, bbox[2] + padding)
     bottom = min(im.height, bbox[3] + padding)
     if right - left >= im.width and bottom - top >= im.height:
-        return  # 没有可裁的白边
+        return False  # 没有可裁的白边
     logging.info(
         "裁剪预览图白边：%dx%d -> %dx%d",
         im.width, im.height, right - left, bottom - top,
     )
     im.crop((left, top, right, bottom)).save(path, "JPEG", quality=85)
+    return True
 
 
 async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | None:
