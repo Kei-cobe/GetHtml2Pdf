@@ -283,7 +283,8 @@ A4_WIDTH_MM = 210
 A4_WIDTH_PX = round(A4_WIDTH_MM / 25.4 * 96)  # 与 A4 纸宽 1:1 对应的 CSS 像素
 MAX_PDF_HEIGHT_IN = 200.0  # Chromium 单页高度上限
 MIN_PDF_SCALE = 0.1
-MAX_SHOT_HEIGHT_PX = 30000  # Chromium 单张截图物理像素高度上限（留余量）
+MAX_PREVIEW_PX = 60000  # 单张预览长图的物理像素高度上限（更高则整体等比缩小）
+PREVIEW_SEGMENT_CSS = 20000  # 单次截图的 CSS 像素高度（2 倍 DPI 下 40000 物理像素，避开编码上限）
 PREVIEW_DEVICE_SCALE = 2  # 预览图按 2 倍 DPI 截图，手机高清屏不模糊
 
 
@@ -330,27 +331,56 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
     total = int(metrics.get("height") or 0)
     if total <= 0:
         return None
-    if total * PREVIEW_DEVICE_SCALE > MAX_SHOT_HEIGHT_PX:
-        # 超出 Chromium 截图上限（物理像素 = CSS 像素 × 设备倍率）：整体缩小页面再截，保证仍是单张长图
-        zoom = MAX_SHOT_HEIGHT_PX / (total * PREVIEW_DEVICE_SCALE)
-        logging.info("页面 %d px 超过截图上限，按 %.2f 比例缩小后截长图", total, zoom)
-        await page.evaluate(
-            "(z) => { document.documentElement.style.zoom = String(z); }", zoom
-        )
-        await page.wait_for_timeout(300)
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{prefix:02d}.jpg"
+    target = target_dir / filename
     await page.evaluate("() => window.scrollTo(0, 0)")
-    shot = dict(path=str(target_dir / filename), full_page=True, type="jpeg", quality=82)
-    try:
-        await page.screenshot(**shot, timeout=120_000)
-    except Exception:
-        # 超高页面截图易超时：再整体缩小一半后重试一次，保证预览图不缺席
-        logging.warning("首次截图失败，缩小页面后重试")
-        await page.evaluate("(z) => { document.documentElement.style.zoom = String(z); }", 0.45)
-        await page.wait_for_timeout(500)
-        await page.screenshot(**shot, timeout=180_000)
-    trim_image_whitespace(target_dir / filename)
+    viewport_width = int(
+        await page.evaluate(
+            """() => {
+                const se = document.scrollingElement || document.documentElement;
+                return Math.min(2400, Math.ceil(Math.max(
+                    se.scrollWidth, document.body ? document.body.scrollWidth : 0, innerWidth)));
+            }"""
+        )
+    ) or A4_WIDTH_PX
+
+    # 超高页面一次性截图会触发 Chromium "Unable to encode screenshot"，
+    # 因此按固定高度分块截取（每块仍在 2 倍 DPI 下），再纵向拼成一张完整长图。
+    seg_css = PREVIEW_SEGMENT_CSS
+    parts: list[Path] = []
+    for index, top in enumerate(range(0, total, seg_css)):
+        height = min(seg_css, total - top)
+        part = target_dir / f"{prefix:02d}-part{index:02d}.jpg"
+        await page.screenshot(
+            path=str(part),
+            clip={"x": 0, "y": top, "width": viewport_width, "height": height},
+            type="jpeg",
+            quality=82,
+            timeout=120_000,
+        )
+        parts.append(part)
+
+    if len(parts) == 1:
+        parts[0].replace(target)
+    else:
+        logging.info("内容 %d px，分 %d 块截图后拼接为单张长图", total, len(parts))
+        images = [Image.open(part) for part in parts]
+        width = max(image.width for image in images)
+        canvas = Image.new("RGB", (width, sum(image.height for image in images)), "white")
+        offset = 0
+        for image in images:
+            canvas.paste(image, (0, offset))
+            offset += image.height
+            image.close()
+        if canvas.height > MAX_PREVIEW_PX:
+            ratio = MAX_PREVIEW_PX / canvas.height
+            canvas = canvas.resize((max(1, round(canvas.width * ratio)), MAX_PREVIEW_PX), Image.LANCZOS)
+        canvas.save(target, "JPEG", quality=82)
+        for part in parts:
+            part.unlink(missing_ok=True)
+
+    trim_image_whitespace(target)
     return filename
 
 
