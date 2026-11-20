@@ -135,6 +135,7 @@ async function main() {
   }
 
   root.innerHTML = '';
+  const pending = [];  // 每张图的加载 Promise，全部结束（成功或最终失败）后才撤加载圈
   if (filterName && manifest.length > 1) {
     const note = document.createElement('div');
     note.className = 'note';
@@ -157,23 +158,28 @@ async function main() {
     for (const file of files) {
       const candidates = [...cdnBases.map(b => `${b}/${file}`), `${dlBase}/${file}`];
       const img = document.createElement('img');
-      img.loading = 'lazy';
+      img.loading = 'eager';  // 遮罩期间全部加载完才展示，不用懒加载
       img.alt = item.name;
       let ci = 0;
-      img.onerror = () => {
-        ci++;
-        if (ci < candidates.length) { img.src = candidates[ci]; return; }
-        const tip = document.createElement('div');
-        tip.className = 'note err';
-        tip.textContent = '图片加载失败：' + file + '，可能已被清理或网络异常，请返回重试。';
-        img.replaceWith(tip);
-      };
+      const done = new Promise(resolve => {
+        img.onload = () => resolve();
+        img.onerror = () => {
+          ci++;
+          if (ci < candidates.length) { img.src = candidates[ci]; return; }
+          const tip = document.createElement('div');
+          tip.className = 'note err';
+          tip.textContent = '图片加载失败：' + file + '，可能已被清理或网络异常，请返回重试。';
+          img.replaceWith(tip);
+          resolve();
+        };
+      });
+      pending.push(done);
       img.src = candidates[0];
       box.appendChild(img);
     }
     root.appendChild(box);
   }
-  hideLoading();
+  Promise.all(pending).then(hideLoading);
 }
 
 main();

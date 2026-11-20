@@ -283,7 +283,8 @@ A4_WIDTH_MM = 210
 A4_WIDTH_PX = round(A4_WIDTH_MM / 25.4 * 96)  # 与 A4 纸宽 1:1 对应的 CSS 像素
 MAX_PDF_HEIGHT_IN = 200.0  # Chromium 单页高度上限
 MIN_PDF_SCALE = 0.1
-MAX_SHOT_HEIGHT_PX = 16000  # Chromium 单张截图高度上限（留余量）
+MAX_SHOT_HEIGHT_PX = 30000  # Chromium 单张截图物理像素高度上限（留余量）
+PREVIEW_DEVICE_SCALE = 2  # 预览图按 2 倍 DPI 截图，手机高清屏不模糊
 
 
 def page_height_js() -> str:
@@ -319,7 +320,7 @@ def trim_image_whitespace(path: Path, padding: int = 12, threshold: int = 18) ->
         "裁剪预览图白边：%dx%d -> %dx%d",
         im.width, im.height, right - left, bottom - top,
     )
-    im.crop((left, top, right, bottom)).save(path, "JPEG", quality=85)
+    im.crop((left, top, right, bottom)).save(path, "JPEG", quality=88)
     return True
 
 
@@ -329,9 +330,9 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
     total = int(metrics.get("height") or 0)
     if total <= 0:
         return None
-    if total > MAX_SHOT_HEIGHT_PX:
-        # 超出 Chromium 截图上限：整体缩小页面再截，保证仍是单张长图
-        zoom = MAX_SHOT_HEIGHT_PX / total
+    if total * PREVIEW_DEVICE_SCALE > MAX_SHOT_HEIGHT_PX:
+        # 超出 Chromium 截图上限（物理像素 = CSS 像素 × 设备倍率）：整体缩小页面再截，保证仍是单张长图
+        zoom = MAX_SHOT_HEIGHT_PX / (total * PREVIEW_DEVICE_SCALE)
         logging.info("页面 %d px 超过截图上限，按 %.2f 比例缩小后截长图", total, zoom)
         await page.evaluate(
             "(z) => { document.documentElement.style.zoom = String(z); }", zoom
@@ -344,7 +345,7 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
         path=str(target_dir / filename),
         full_page=True,
         type="jpeg",
-        quality=80,
+        quality=88,
     )
     trim_image_whitespace(target_dir / filename)
     return filename
@@ -402,6 +403,7 @@ async def capture_pdf(
 ) -> CaptureResult:
     context = await browser.new_context(
         viewport={"width": A4_WIDTH_PX, "height": 1200},
+        device_scale_factor=PREVIEW_DEVICE_SCALE,
         locale="zh-CN",
         timezone_id="Asia/Shanghai",
         ignore_https_errors=True,
