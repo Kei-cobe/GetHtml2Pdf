@@ -594,6 +594,47 @@ function renderRunStatus() {
       askDelete(row.dataset.id, row.dataset.label, row.dataset.time);
     });
   });
+  // 定时任务的运行标题是「定时任务（自动）」而不是任务名，用该次运行的预览清单校正按钮
+  box.querySelectorAll('.swipe-row').forEach(row => {
+    const st = rows.find(x => String(x.id) === row.dataset.id);
+    if (st && st.status === 'completed' && st.conclusion === 'success') patchTaskButtons(row, String(st.id));
+  });
+}
+
+const manifestCache = {};
+async function manifestNames(runId) {
+  if (Object.prototype.hasOwnProperty.call(manifestCache, runId)) return manifestCache[runId];
+  const bases = [
+    `https://cdn.jsdelivr.net/gh/${OWNER}/${REPO}@previews`,
+    `https://fastly.jsdelivr.net/gh/${OWNER}/${REPO}@previews`,
+    `https://raw.githubusercontent.com/${OWNER}/${REPO}/previews`,
+  ];
+  for (const base of bases) {
+    try {
+      const res = await fetch(`${base}/run-${runId}/manifest.json`, { cache: 'no-store' });
+      if (!res.ok) continue;
+      const list = await res.json();
+      if (Array.isArray(list) && list.length) {
+        manifestCache[runId] = list.map(x => String(x.name || '').trim()).filter(Boolean);
+        return manifestCache[runId];
+      }
+    } catch (e) { /* 换下一个镜像 */ }
+  }
+  manifestCache[runId] = [];
+  return manifestCache[runId];
+}
+async function patchTaskButtons(row, runId) {
+  const names = await manifestNames(runId);
+  if (!names.length || !document.contains(row)) return;
+  const holder = row.querySelector('.st-btns');
+  if (!holder) return;
+  holder.innerHTML = names.map(p => {
+    const url = `preview.html?run=${encodeURIComponent(runId)}&name=${encodeURIComponent(p)}`;
+    return `<button type="button" class="st-btn" data-href="${esc(url)}">${esc(p)}</button>`;
+  }).join('');
+  holder.querySelectorAll('.st-btn').forEach(b => b.addEventListener('click', () => {
+    const u = b.dataset.href; if (u) location.href = u;
+  }));
 }
 
 function closeAllSwipes(except) {

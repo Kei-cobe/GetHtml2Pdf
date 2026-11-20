@@ -123,6 +123,7 @@ async function main() {
 
   // 按 URL 传入的 name 过滤（精确匹配），没有则展示全部
   let items = manifest;
+  let fallbackAll = false;
   if (filterName) {
     items = manifest.filter(m => m.name === filterName);
     if (!items.length) {
@@ -130,13 +131,20 @@ async function main() {
       items = manifest.filter(m => m.name.includes(filterName) || filterName.includes(m.name));
     }
     if (!items.length) {
-      return fail(`这次运行里没有名为「${esc(filterName)}」的任务，可能任务名已变更或抓取失败。`);
+      // 标题不是任务名（如"定时任务（自动）"），回退展示本次全部任务
+      fallbackAll = true;
+      items = manifest;
     }
   }
 
   root.innerHTML = '';
   const pending = [];  // 每张图的加载 Promise，全部结束（成功或最终失败）后才撤加载圈
-  if (filterName && manifest.length > 1) {
+  if (fallbackAll) {
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = `未找到名为「${filterName}」的任务，已展示本次全部 ${manifest.length} 个任务。`;
+    root.appendChild(note);
+  } else if (filterName && manifest.length > 1) {
     const note = document.createElement('div');
     note.className = 'note';
     note.innerHTML = `当前只展示「${esc(items[0].name)}」的预览图（共 ${manifest.length} 个任务）· <a href="preview.html?run=${encodeURIComponent(runId)}" style="color:var(--accent);">查看全部</a>`;

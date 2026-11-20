@@ -320,7 +320,7 @@ def trim_image_whitespace(path: Path, padding: int = 12, threshold: int = 18) ->
         "裁剪预览图白边：%dx%d -> %dx%d",
         im.width, im.height, right - left, bottom - top,
     )
-    im.crop((left, top, right, bottom)).save(path, "JPEG", quality=88)
+    im.crop((left, top, right, bottom)).save(path, "JPEG", quality=82)
     return True
 
 
@@ -345,7 +345,7 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
         path=str(target_dir / filename),
         full_page=True,
         type="jpeg",
-        quality=88,
+        quality=82,
     )
     trim_image_whitespace(target_dir / filename)
     return filename
