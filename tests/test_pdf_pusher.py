@@ -86,3 +86,30 @@ class TaskTests(unittest.TestCase):
         attachments = list(message.iter_attachments())
         self.assertEqual(len(attachments), 1)
         self.assertEqual(attachments[0].get_filename(), "test.pdf")
+
+
+class TrimWhitespaceTests(unittest.TestCase):
+    def test_trims_white_margins(self):
+        from PIL import Image
+        from pdf_pusher import trim_image_whitespace
+        with tempfile.TemporaryDirectory() as directory:
+            p = Path(directory) / "t.jpg"
+            im = Image.new("RGB", (400, 300), (255, 255, 255))
+            for x in range(100, 200):
+                for y in range(50, 150):
+                    im.putpixel((x, y), (200, 30, 30))
+            im.save(p, "JPEG")
+            trim_image_whitespace(p)
+            out = Image.open(p)
+        # 内容 100x100，四周补 12px 边距；JPEG 噪点在阈值内被忽略
+        self.assertTrue(110 <= out.width <= 130, out.size)
+        self.assertTrue(110 <= out.height <= 130, out.size)
+
+    def test_all_white_image_left_untouched(self):
+        from PIL import Image
+        from pdf_pusher import trim_image_whitespace
+        with tempfile.TemporaryDirectory() as directory:
+            p = Path(directory) / "w.jpg"
+            Image.new("RGB", (200, 100), (255, 255, 255)).save(p, "JPEG")
+            trim_image_whitespace(p)
+            self.assertEqual(Image.open(p).size, (200, 100))
