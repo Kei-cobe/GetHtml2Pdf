@@ -35,10 +35,17 @@
 
 <script>
 const LS = { get: (k) => localStorage.getItem('pdf_ctrl_' + k) };
+const token = (LS.get('token') || '').trim();
 const owner = (LS.get('owner') || 'Kei-cobe').trim();
 const repo = (LS.get('repo') || 'GetHtml2Pdf').trim();
 const runId = new URLSearchParams(location.search).get('run') || '';
 const root = document.getElementById('root');
+
+function apiHeaders() {
+  const headers = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  return headers;
+}
 
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -51,9 +58,12 @@ async function main() {
   if (!runId) return fail('缺少运行编号，请从控制台任务列表点击任务名进入。', true);
   let release;
   try {
-    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`);
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`, { headers: apiHeaders() });
     if (res.status === 404) {
       return fail('这次运行没有生成网页预览图：可能抓取任务全部失败，或设置里关闭了「网页图片预览」，或预览图已超过保留期限（最近 6 次）被清理。');
+    }
+    if (res.status === 403) {
+      return fail('读取预览信息被 GitHub 限流（HTTP 403）。请回到控制台，在设置里保存有效的 GitHub Token 后再试。', true);
     }
     if (!res.ok) return fail('读取预览信息失败：HTTP ' + res.status, true);
     release = await res.json();
@@ -63,14 +73,12 @@ async function main() {
 
   const assets = {};
   for (const a of release.assets || []) assets[a.name] = a.browser_download_url;
-  if (!assets['manifest.json']) return fail('预览图清单缺失，本次运行可能未生成图片。', true);
 
   let manifest = [];
   try {
-    const res = await fetch(assets['manifest.json']);
-    manifest = await res.json();
+    manifest = JSON.parse(release.body || '[]');
   } catch (e) {
-    return fail('读取预览清单失败：' + e.message, true);
+    return fail('预览清单解析失败，请稍后重试。', true);
   }
   if (!Array.isArray(manifest) || !manifest.length) return fail('这次运行没有生成网页预览图。');
 

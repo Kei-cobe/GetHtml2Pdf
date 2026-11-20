@@ -61,8 +61,8 @@ jobs:
         run: |
           set -e
           TAG="preview-${GITHUB_RUN_ID}"
-          gh release create "$TAG" --title "预览图 ${GITHUB_RUN_ID}" --notes "网页图片预览" >/dev/null 2>&1 || true
-          find previews -type f \( -name '*.jpg' -o -name 'manifest.json' \) -print0 \
+          gh release create "$TAG" --title "预览图 ${GITHUB_RUN_ID}" --notes "$(cat previews/run-${GITHUB_RUN_ID}/manifest.json)" >/dev/null 2>&1 || true
+          find previews -type f -name '*.jpg' -print0 \
             | xargs -0 -r -n 20 gh release upload "$TAG" --clobber
           # 只保留最近 6 次预览发布，避免占用过多空间
           gh release list --limit 200 --json tagName,createdAt \
