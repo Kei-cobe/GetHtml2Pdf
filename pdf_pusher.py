@@ -282,7 +282,7 @@ A4_WIDTH_MM = 210
 A4_WIDTH_PX = round(A4_WIDTH_MM / 25.4 * 96)  # 与 A4 纸宽 1:1 对应的 CSS 像素
 MAX_PDF_HEIGHT_IN = 200.0  # Chromium 单页高度上限
 MIN_PDF_SCALE = 0.1
-PREVIEW_SEGMENT_PX = 2200  # 网页预览图每一段的高度
+MAX_SHOT_HEIGHT_PX = 16000  # Chromium 单张截图高度上限（留余量）
 
 
 def page_height_js() -> str:
@@ -294,29 +294,30 @@ def page_height_js() -> str:
     }"""
 
 
-async def save_preview_images(page: Any, target_dir: Path, prefix: int, max_segments: int = 40) -> int:
-    """把整页滚动截成多张 JPG，供手机端浏览器直接查看（不依赖 PDF 阅读器）。"""
+async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | None:
+    """把整页截成一张不分段的长条 JPG（与长条 PDF 一致），返回文件名。"""
     metrics = await page.evaluate(page_height_js())
     total = int(metrics.get("height") or 0)
     if total <= 0:
-        return 0
-    await page.set_viewport_size(
-        {"width": A4_WIDTH_PX, "height": min(PREVIEW_SEGMENT_PX, total)}
-    )
-    target_dir.mkdir(parents=True, exist_ok=True)
-    saved = 0
-    offset = 0
-    while offset < total and saved < max_segments:
-        await page.evaluate("(y) => window.scrollTo(0, y)", offset)
-        await page.wait_for_timeout(150)
-        await page.screenshot(
-            path=str(target_dir / f"{prefix:02d}-{saved + 1:02d}.jpg"),
-            type="jpeg",
-            quality=72,
+        return None
+    if total > MAX_SHOT_HEIGHT_PX:
+        # 超出 Chromium 截图上限：整体缩小页面再截，保证仍是单张长图
+        zoom = MAX_SHOT_HEIGHT_PX / total
+        logging.info("页面 %d px 超过截图上限，按 %.2f 比例缩小后截长图", total, zoom)
+        await page.evaluate(
+            "(z) => { document.documentElement.style.zoom = String(z); }", zoom
         )
-        saved += 1
-        offset += PREVIEW_SEGMENT_PX
-    return saved
+        await page.wait_for_timeout(300)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{prefix:02d}.jpg"
+    await page.evaluate("() => window.scrollTo(0, 0)")
+    await page.screenshot(
+        path=str(target_dir / filename),
+        full_page=True,
+        type="jpeg",
+        quality=80,
+    )
+    return filename
 
 
 async def print_long_pdf(page: Any, pdf_path: Path) -> None:
@@ -393,8 +394,8 @@ async def capture_pdf(
         logging.info("PDF 已生成：%s（%.1f MB）", pdf_path.name, pdf_path.stat().st_size / 1_048_576)
         if preview_dir is not None:
             try:
-                count = await save_preview_images(page, preview_dir, preview_index)
-                logging.info("网页预览图已生成：%d 张", count)
+                filename = await save_preview_image(page, preview_dir, preview_index)
+                logging.info("网页预览长图已生成：%s", filename or "无")
             except Exception as exc:
                 logging.warning("网页预览图生成失败：%s", humanize_failure(exc))
         return CaptureResult(task, pdf_path, page.url)
@@ -683,9 +684,9 @@ async def async_main() -> int:
                     )
                     pdf_count += 1
                     if preview_root is not None:
-                        shots = len(list(preview_root.glob(f"{index:02d}-*.jpg")))
-                        if shots:
-                            preview_manifest.append({"index": index, "name": task.name, "images": shots})
+                        image_name = f"{index:02d}.jpg"
+                        if (preview_root / image_name).is_file():
+                            preview_manifest.append({"index": index, "name": task.name, "image": image_name})
                     if not args.no_push:
                         failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result, channels))
                 except Exception as exc:

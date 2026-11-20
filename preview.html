@@ -58,30 +58,39 @@ function fail(msg, isErr) {
 
 async function main() {
   if (!runId) return fail('缺少运行编号，请从控制台任务列表点击任务名进入。', true);
-  let release;
+  // Release asset 的下载地址匿名可访问，无需 GitHub API（匿名 API 极易 403 限流）
+  const dlBase = `https://github.com/${owner}/${repo}/releases/download/preview-${encodeURIComponent(runId)}`;
+
+  let manifest = null;
+  // 优先直接下载 manifest.json asset（新格式，零 API）
   try {
-    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`, { headers: apiHeaders() });
-    if (res.status === 404) {
-      return fail('这次运行没有生成网页预览图：可能抓取任务全部失败，或设置里关闭了「网页图片预览」，或预览图已超过保留期限（最近 6 次）被清理。');
+    const res = await fetch(`${dlBase}/manifest.json`);
+    if (res.ok) manifest = await res.json();
+    else if (res.status !== 404) {
+      return fail('读取预览清单失败：HTTP ' + res.status + '，请稍后重试。', true);
     }
-    if (res.status === 403) {
-      return fail('读取预览信息被 GitHub 限流（HTTP 403）。请回到控制台，在设置里保存有效的 GitHub Token 后再试。', true);
-    }
-    if (!res.ok) return fail('读取预览信息失败：HTTP ' + res.status, true);
-    release = await res.json();
   } catch (e) {
-    return fail('网络异常，无法读取预览图：' + e.message, true);
+    return fail('网络异常，无法读取预览清单：' + e.message, true);
   }
 
-  const assets = {};
-  for (const a of release.assets || []) assets[a.name] = a.browser_download_url;
-
-  let manifest = [];
-  try {
-    manifest = JSON.parse(release.body || '[]');
-  } catch (e) {
-    return fail('预览清单解析失败，请稍后重试。', true);
+  // 旧 release 没有 manifest.json asset：回退到 API 读 release body（需要 Token 防限流）
+  if (!manifest) {
+    try {
+      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/tags/preview-${encodeURIComponent(runId)}`, { headers: apiHeaders() });
+      if (res.status === 404) {
+        return fail('这次运行没有生成网页预览图：可能抓取任务全部失败，或设置里关闭了「网页图片预览」，或预览图已超过保留期限（最近 6 次）被清理。');
+      }
+      if (res.status === 403) {
+        return fail('读取预览信息被 GitHub 限流（HTTP 403）。请回到控制台，在设置里保存有效的 GitHub Token 后再试；新产生的预览已无需此步骤。', true);
+      }
+      if (!res.ok) return fail('读取预览信息失败：HTTP ' + res.status, true);
+      const release = await res.json();
+      manifest = JSON.parse(release.body || '[]');
+    } catch (e) {
+      return fail('网络异常，无法读取预览图：' + e.message, true);
+    }
   }
+
   if (!Array.isArray(manifest) || !manifest.length) return fail('这次运行没有生成网页预览图。');
 
   // 按 URL 传入的 name 过滤（精确匹配），没有则展示全部
@@ -107,17 +116,28 @@ async function main() {
   for (const item of items) {
     const box = document.createElement('div');
     box.className = 'task';
-    const images = [];
-    for (let n = 1; n <= (item.images || 0); n++) {
-      const name = `${String(item.index).padStart(2, '0')}-${String(n).padStart(2, '0')}.jpg`;
-      if (assets[name]) images.push(assets[name]);
+    // 新格式：单张长图；旧格式：多段图（兼容）
+    const urls = [];
+    if (item.image) {
+      urls.push(`${dlBase}/${item.image}`);
+    } else {
+      for (let n = 1; n <= (item.images || 0); n++) {
+        const name = `${String(item.index).padStart(2, '0')}-${String(n).padStart(2, '0')}.jpg`;
+        urls.push(`${dlBase}/${name}`);
+      }
     }
-    box.innerHTML = `<h2>${esc(item.name)}<span>${images.length} 张</span></h2>`;
-    for (const url of images) {
+    box.innerHTML = `<h2>${esc(item.name)}<span>${item.image ? '长图' : urls.length + ' 张'}</span></h2>`;
+    for (const url of urls) {
       const img = document.createElement('img');
       img.loading = 'lazy';
       img.alt = item.name;
       img.src = url;
+      img.onerror = () => {
+        const tip = document.createElement('div');
+        tip.className = 'note err';
+        tip.textContent = '图片加载失败：' + url.split('/').pop() + '，可能已被清理或网络异常，请返回重试。';
+        img.replaceWith(tip);
+      };
       box.appendChild(img);
     }
     root.appendChild(box);
