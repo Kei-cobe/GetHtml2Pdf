@@ -341,12 +341,15 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{prefix:02d}.jpg"
     await page.evaluate("() => window.scrollTo(0, 0)")
-    await page.screenshot(
-        path=str(target_dir / filename),
-        full_page=True,
-        type="jpeg",
-        quality=82,
-    )
+    shot = dict(path=str(target_dir / filename), full_page=True, type="jpeg", quality=82)
+    try:
+        await page.screenshot(**shot, timeout=120_000)
+    except Exception:
+        # 超高页面截图易超时：再整体缩小一半后重试一次，保证预览图不缺席
+        logging.warning("首次截图失败，缩小页面后重试")
+        await page.evaluate("(z) => { document.documentElement.style.zoom = String(z); }", 0.45)
+        await page.wait_for_timeout(500)
+        await page.screenshot(**shot, timeout=180_000)
     trim_image_whitespace(target_dir / filename)
     return filename
 
