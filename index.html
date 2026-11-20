@@ -101,7 +101,8 @@
   .chk { display: flex; align-items: center; gap: 6px; font-weight: 600; margin: 0; }
   .chk input { width: auto; margin: 0; }
   .st-ico { flex: 0 0 16px; text-align: center; font-size: 14px; }
-  .spinner { flex: 0 0 15px; width: 15px; height: 15px; border: 2px solid #cfd6e4; border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+  .spinner { position: relative; flex: 0 0 auto; width: 18px; height: 18px; border: 2px solid #dbe3f0; border-radius: 50%; }
+  .spinner::before { content: ''; position: absolute; top: -2px; left: 50%; width: 5px; height: 5px; margin-left: -2.5px; background: var(--primary); border-radius: 50%; transform-origin: 2.5px 11px; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   #toast { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -46%) scale(.94); width: min(74vw, 300px); padding: 22px 20px 20px; border-radius: 16px; background: rgba(31,35,40,.96); color: #fff; text-align: center; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 99; box-shadow: 0 12px 34px rgba(0,0,0,.28); }
   #toast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
@@ -111,7 +112,8 @@
   /* 全屏居中加载遮罩 */
   .loading-mask { position: fixed; inset: 0; background: rgba(255,255,255,.82); display: flex; align-items: center; justify-content: center; z-index: 9999; }
   .loading-mask.hide { display: none; }
-  .spinner { width: 46px; height: 46px; border: 4px solid #dbe3f0; border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 14px; }
+  .loading-mask .spinner { width: 46px; height: 46px; border: 4px solid #dbe3f0; border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 14px; }
+  .loading-mask .spinner::before { display: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .loading-text { font-size: 16px; font-weight: 600; color: var(--text); letter-spacing: 1px; text-align: center; }
   .dot { animation: blink 1.2s infinite; }
@@ -180,7 +182,7 @@
       <button id="loadSched" class="ghost">读取定时</button>
       <button id="saveSched">保存到仓库</button>
     </div>
-    <p class="hint">按北京时间设置，会自动换算成 UTC 写入工作流。保存后约 1 分钟生效。</p>
+    <p class="hint">先读取定时进行同步，再进行定时设置，点击保存后约 1 分钟生效。</p>
   </div>
 
   <div class="card">
