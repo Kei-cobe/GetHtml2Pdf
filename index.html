@@ -151,6 +151,9 @@
         <button id="saveSet" class="ghost">保存设置</button>
         <button id="clearSet" class="danger">清除设置</button>
       </div>
+      <div class="btn-row">
+        <button id="restoreRuns" class="ghost">查看今日完整任务列表</button>
+      </div>
 
       <hr style="border:none;border-top:1px dashed var(--border);margin:16px 0 10px;">
       <h3 style="font-size:14px;margin:6px 0 4px;color:var(--text);">📋 定时任务（网址 + 备注）</h3>
@@ -668,6 +671,61 @@ $('confirmOk').onclick = () => {
   $('confirmMask').classList.add('hide');
   renderRunStatus();
   toast('✓ 已删除');
+  scheduleDeletedSave();
+};
+
+// ===== 删除黑名单跨设备同步（仓库 deleted_runs.json，不删 GitHub 真实记录/预览图）=====
+let deletedSha = null;
+let deletedTimer = null;
+
+async function loadDeletedRuns() {
+  // raw.githubusercontent.com 带 CORS 头且匿名可读，无 Token 的设备也能同步删除状态
+  const { owner, repo } = cfg();
+  try {
+    const res = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/main/deleted_runs.json?ts=${Date.now()}`);
+    if (res.status === 404 || !res.ok) return; // 仓库还没有黑名单文件
+    const arr = await res.json();
+    if (Array.isArray(arr)) {
+      deletedRuns = arr.map(String);
+      LS.set('deleted_runs', JSON.stringify(deletedRuns));
+    }
+  } catch (e) { /* 网络异常时沿用本机缓存 */ }
+}
+
+async function saveDeletedRuns() {
+  if (!LS.get('token')) { log('删除已在本机生效；未保存 Token，无法跨设备同步', 'err-text'); return; }
+  try {
+    if (!deletedSha) {
+      try { deletedSha = (await gh('GET', '/contents/deleted_runs.json')).sha; } catch (e) { deletedSha = null; }
+    }
+    const payload = { message: '同步任务列表删除记录', content: b64encodeUnicode(JSON.stringify(deletedRuns, null, 2)) };
+    if (deletedSha) payload.sha = deletedSha;
+    const res = await gh('PUT', '/contents/deleted_runs.json', payload);
+    if (res && res.content && res.content.sha) deletedSha = res.content.sha;
+    log('删除记录已同步到仓库，各设备刷新后一致', 'ok-text');
+  } catch (e) {
+    log('删除同步失败（本机已生效）：' + e.message, 'err-text');
+  }
+}
+function scheduleDeletedSave() {
+  clearTimeout(deletedTimer);
+  deletedTimer = setTimeout(saveDeletedRuns, 1500);
+}
+
+$('restoreRuns').onclick = async () => {
+  showLoading();
+  try {
+    deletedRuns = [];
+    LS.set('deleted_runs', '[]');
+    await saveDeletedRuns();
+    if (LS.get('token')) {
+      await fetchRuns();
+      await loadRunAnnotations(mergedRows());
+    }
+    renderRunStatus();
+    toast('✓ 已恢复今日完整任务列表');
+  } catch (e) { toast(e.message, true); log(e.message, 'err-text'); }
+  finally { hideLoading(); }
 };
 
 async function pollStatus() {
@@ -890,6 +948,7 @@ function scheduleChannelSave() {
 
 loadCfg();
 loadRecords();
+loadDeletedRuns().catch(() => {}).finally(() => renderRunStatus());
 if (LS.get('token')) {
   loadTasksData().catch(() => {});
   loadSchedule().catch(() => {});
