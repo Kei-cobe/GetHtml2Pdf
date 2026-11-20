@@ -524,9 +524,18 @@ function renderRunStatus() {
     const reasonHtml = reason ? `<div class="st-err">${esc(reason)}</div>` : '';
     const warn = warnText(r);
     const warnHtml = warn ? `<div class="st-warn">${esc(warn)}</div>` : '';
-    const labelHtml = (r.status === 'completed' && r.conclusion === 'success')
-      ? `<a class="st-label st-link" href="preview.html?run=${encodeURIComponent(r.id)}">🖼 ${esc(r.label)}</a>`
-      : `<div class="st-label">${esc(r.label)}</div>`;
+    let labelHtml;
+    if (r.status === 'completed' && r.conclusion === 'success') {
+      // 把 label 按 " | " 拆成单独任务名，各自跳预览页并过滤对应任务
+      const parts = r.label.split('|').map(s => s.trim()).filter(Boolean);
+      // 只有一个任务名时直接带 name 参数；多个也让每个单独链接
+      const links = parts.map(p =>
+        `<a class="st-link" href="preview.html?run=${encodeURIComponent(r.id)}&name=${encodeURIComponent(p)}" style="margin-right:6px;">🖼 ${esc(p)}</a>`
+      ).join('');
+      labelHtml = `<div class="st-label">${links}</div>`;
+    } else {
+      labelHtml = `<div class="st-label">${esc(r.label)}</div>`;
+    }
     return `<div class="status-row">${icon}<div class="st-main">${labelHtml}${reasonHtml}${warnHtml}</div><span class="st-time">${time}</span></div>`;
   }).join('') + '</div>';
 }

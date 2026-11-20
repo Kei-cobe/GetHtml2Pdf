@@ -38,7 +38,9 @@ const LS = { get: (k) => localStorage.getItem('pdf_ctrl_' + k) };
 const token = (LS.get('token') || '').trim();
 const owner = (LS.get('owner') || 'Kei-cobe').trim();
 const repo = (LS.get('repo') || 'GetHtml2Pdf').trim();
-const runId = new URLSearchParams(location.search).get('run') || '';
+const qs = new URLSearchParams(location.search);
+const runId = qs.get('run') || '';
+const filterName = qs.get('name') || '';
 const root = document.getElementById('root');
 
 function apiHeaders() {
@@ -82,8 +84,27 @@ async function main() {
   }
   if (!Array.isArray(manifest) || !manifest.length) return fail('这次运行没有生成网页预览图。');
 
+  // 按 URL 传入的 name 过滤（精确匹配），没有则展示全部
+  let items = manifest;
+  if (filterName) {
+    items = manifest.filter(m => m.name === filterName);
+    if (!items.length) {
+      // 精确匹配没命中，退一步做宽松匹配（包含即可）
+      items = manifest.filter(m => m.name.includes(filterName) || filterName.includes(m.name));
+    }
+    if (!items.length) {
+      return fail(`这次运行里没有名为「${esc(filterName)}」的任务，可能任务名已变更或抓取失败。`);
+    }
+  }
+
   root.innerHTML = '';
-  for (const item of manifest) {
+  if (filterName && manifest.length > 1) {
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.innerHTML = `当前只展示「${esc(items[0].name)}」的预览图（共 ${manifest.length} 个任务）· <a href="preview.html?run=${encodeURIComponent(runId)}" style="color:var(--accent);">查看全部</a>`;
+    root.appendChild(note);
+  }
+  for (const item of items) {
     const box = document.createElement('div');
     box.className = 'task';
     const images = [];
