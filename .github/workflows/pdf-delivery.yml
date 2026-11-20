@@ -4,8 +4,8 @@ run-name: ${{ inputs.label || '定时任务（自动）' }}
 on:
   schedule:
     # GitHub 使用 UTC：以下时间已由控制台按北京时间自动换算。
-    - cron: "0 11 * * *"
-    - cron: "0 12 * * *"
+    - cron: "30 10 * * *"
+    - cron: "30 12 * * *"
   workflow_dispatch:
     inputs:
       tasks:
