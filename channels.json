@@ -1,5 +1,5 @@
 {
   "email": false,
-  "wecom": false,
+  "wecom": true,
   "preview": true
 }
