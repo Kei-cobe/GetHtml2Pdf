@@ -1,7 +1,7 @@
 {
   "tasks": [
     {
-      "name": "澳门凤凰天机",
+      "name": "凤凰天机",
       "url": "https://fenghuangtianji-jiulianjie4.lkhjgfd.app/#4",
       "frame_selector": "iframe[src*='yjjy/ziliao.html']",
       "enabled": true
@@ -25,7 +25,7 @@
       "enabled": true
     },
     {
-      "name": "澳门必胜客",
+      "name": "必胜客",
       "url": "https://680444.3490a.app:3137/news/app/am.html",
       "frame_selector": "",
       "enabled": true
