@@ -45,7 +45,24 @@ async function getSchedule(env) {
       if (Array.isArray(parsed)) return parsed.filter((t) => typeof t === 'string');
     }
   } catch (e) {
-    console.error('[schedule] read error:', e && e.message);
+    console.error('[schedule] kv read error:', e && e.message);
+  }
+  // KV 无缓存时从仓库 schedule.json 拉取（前端在 Worker 不可达时会改写该文件）
+  try {
+    const res = await fetch(
+      `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/main/schedule.json`,
+      { headers: { 'User-Agent': 'pdf-scheduler-worker' }, cf: { cacheTtl: 0 } }
+    );
+    if (res.ok) {
+      const list = await res.json();
+      if (Array.isArray(list)) {
+        const clean = list.map((t) => String(t).trim()).filter((t) => /^\d{2}:\d{2}$/.test(t));
+        await env.DEDUP.put(SCHEDULE_KEY, JSON.stringify(clean), { expirationTtl: 300 });
+        return clean;
+      }
+    }
+  } catch (e) {
+    console.error('[schedule] repo fetch error:', e && e.message);
   }
   return DEFAULT_SCHEDULE;
 }
@@ -137,7 +154,7 @@ export default {
         const list = Array.isArray(body.schedule)
           ? body.schedule.map((t) => String(t).trim()).filter((t) => /^\d{2}:\d{2}$/.test(t))
           : [];
-        await env.DEDUP.put(SCHEDULE_KEY, JSON.stringify(list));
+        await env.DEDUP.put(SCHEDULE_KEY, JSON.stringify(list), { expirationTtl: 300 });
         return new Response(JSON.stringify({ ok: true, schedule: list }), {
           status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
         });
