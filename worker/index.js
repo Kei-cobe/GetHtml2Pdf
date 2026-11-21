@@ -60,6 +60,7 @@ async function triggerGithub(tasks, label, githubToken) {
         Authorization: 'Bearer ' + githubToken,
         'X-GitHub-Api-Version': '2022-11-28',
         'Content-Type': 'application/json',
+        'User-Agent': 'pdf-scheduler-worker',
       },
       body: JSON.stringify({ ref: 'main', inputs: { tasks: tasks || '', label: label || '' } }),
     }
