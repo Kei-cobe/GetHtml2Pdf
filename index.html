@@ -246,16 +246,8 @@ function b64decodeUnicode(b64) {
 }
 
 const OWNER = 'Kei-cobe', REPO = 'GetHtml2Pdf', WORKFLOW = 'pdf-delivery.yml';  // 仓库信息硬编码，不再前台展示
-// 外部定时器（Cloudflare Worker）：任务下发统一走这里，由 Worker 做跨终端 5 分钟去重 + 准点 cron 触发
-const WORKER_URL = 'https://pdf-scheduler.wyyxkjy.workers.dev';
-const WORKER_TRIGGER_KEY = 'VYHZUgIWJNvw67aC7Bx2slThbwiQoiU5';
-// 带超时的 fetch：workers.dev 在部分网络下不可达，避免页面无限转圈（超时后可降级）
-async function fetchT(url, opts, ms) {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), ms || 3000);
-  try { return await fetch(url, Object.assign({}, opts || {}, { signal: ctl.signal })); }
-  finally { clearTimeout(timer); }
-}
+// 定时触发由 Cloudflare Worker 按仓库 schedule.json 准点执行；本页只做手动下发（本机 5 分钟去重）
+
 function cfg() {
   return {
     token: $('token').value.trim(),
@@ -824,35 +816,7 @@ async function dispatch(manual, meta) {
   const count = (meta && meta.count) || 1;
   showLoading();
   try {
-    let res = null;
-    let workerDown = false;
-    try {
-      res = await fetchT(WORKER_URL + '/trigger', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-trigger-key': WORKER_TRIGGER_KEY },
-        body: JSON.stringify({ tasks: manual || '', label: label }),
-      });
-    } catch (e) {
-      workerDown = true; // 网络不可达/超时
-    }
-    if (workerDown) {
-      // 降级：直接调 GitHub 下发（本次无跨终端去重，仅保留本机 5 分钟去重）
-      await gh('POST', `/actions/workflows/${cfg().workflow}/dispatches`, { ref: 'main', inputs: { tasks: manual || '', label: label } });
-      toast('已下发（降级模式）');
-      log('外部定时服务不可达，已改为直连下发（本次无跨终端去重）', 'err-text');
-    } else {
-      let data = null;
-      try { data = await res.json(); } catch (e) { data = null; }
-      if (res.status === 429) {
-        const msg = (data && data.message) || '5 分钟内已下发过相同任务（跨终端拦截）';
-        toast(msg, true);
-        log('已阻止（跨终端）：' + msg, 'err-text');
-        return false;
-      }
-      if (!res.ok) {
-        throw new Error((data && data.message) || `HTTP ${res.status}`);
-      }
-    }
+    await gh('POST', `/actions/workflows/${cfg().workflow}/dispatches`, { ref: 'main', inputs: { tasks: manual || '', label: label } });
     sent.push({ key, ts: now });
     LS.set('dispatches', JSON.stringify(sent.slice(-60)));
     toast('✓ 已下发任务');
@@ -932,20 +896,12 @@ function beijingToCron(hhmm) {
   return m + ' ' + ((h - 8 + 24) % 24) + ' * * *';
 }
 async function loadSchedule() {
-  try {
-    const res = await fetchT(WORKER_URL + '/admin/schedule', { headers: { 'x-trigger-key': WORKER_TRIGGER_KEY } });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error((data && data.error) || `读取定时失败（HTTP ${res.status}）`);
-    schedules = (data.schedule || []).slice().sort();
-  } catch (e) {
-    // 降级：外部定时服务不可达，改从仓库 schedule.json 读取
-    const f = await gh('GET', '/contents/schedule.json').catch(() => null);
-    let list = [];
-    if (f && f.content) { try { list = JSON.parse(b64decodeUnicode(f.content)); } catch (x) { list = []; } }
-    if (!Array.isArray(list)) list = [];
-    schedules = list.slice().sort();
-    log('外部定时服务不可达，定时设置已从仓库读取（保存后最长约 5 分钟同步到定时器）', 'err-text');
-  }
+  // 定时配置以仓库 schedule.json 为唯一来源，Cloudflare Worker 定时拉取后准点触发
+  const f = await gh('GET', '/contents/schedule.json').catch(() => null);
+  let list = [];
+  if (f && f.content) { try { list = JSON.parse(b64decodeUnicode(f.content)); } catch (x) { list = []; } }
+  if (!Array.isArray(list)) list = [];
+  schedules = list.slice().sort();
   renderSchedules();
   return schedules;
 }
@@ -961,31 +917,14 @@ $('addTime').onclick = () => {
 };
 $('saveSched').onclick = async () => {
   try {
-    let saved = null;
-    let viaRepo = false;
-    try {
-      const res = await fetchT(WORKER_URL + '/admin/schedule', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'x-trigger-key': WORKER_TRIGGER_KEY },
-        body: JSON.stringify({ schedule: schedules }),
-      }, 4000);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error((data && data.error) || `保存定时失败（HTTP ${res.status}）`);
-      saved = (data.schedule || []).slice().sort();
-    } catch (e) {
-      // 降级：写入仓库 schedule.json，Worker 会定期拉取
-      const cur = await gh('GET', '/contents/schedule.json').catch(() => null);
-      const body = { message: '更新定时时间', content: b64encodeUnicode(JSON.stringify(schedules)) };
-      if (cur && cur.sha) body.sha = cur.sha;
-      await gh('PUT', '/contents/schedule.json', body);
-      saved = schedules.slice().sort();
-      viaRepo = true;
-    }
-    schedules = saved;
+    const cur = await gh('GET', '/contents/schedule.json').catch(() => null);
+    const body = { message: '更新定时时间', content: b64encodeUnicode(JSON.stringify(schedules)) };
+    if (cur && cur.sha) body.sha = cur.sha;
+    await gh('PUT', '/contents/schedule.json', body);
+    schedules = schedules.slice().sort();
     renderSchedules();
     log('定时已保存：' + (schedules.length ? schedules.join('、') : '无（仅手动）')
-      + (viaRepo ? '（已写入仓库，最长约 5 分钟同步到定时器）' : '，下一分钟起生效'),
-      viaRepo ? 'err-text' : 'ok-text');
+      + '（定时器自动同步，保存后可关闭页面，最长约 5 分钟生效）', 'ok-text');
   } catch (e) { log(e.message, 'err-text'); }
 };
 

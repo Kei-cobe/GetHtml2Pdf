@@ -284,8 +284,7 @@ A4_WIDTH_MM = 210
 A4_WIDTH_PX = round(A4_WIDTH_MM / 25.4 * 96)  # 与 A4 纸宽 1:1 对应的 CSS 像素
 MAX_PDF_HEIGHT_IN = 200.0  # Chromium 单页高度上限
 MIN_PDF_SCALE = 0.1
-MAX_PREVIEW_PX = 60000  # 单张预览长图的物理像素高度上限（更高则整体等比缩小）
-PREVIEW_SEGMENT_CSS = 20000  # 单次截图的 CSS 像素高度（2 倍 DPI 下 40000 物理像素，避开编码上限）
+PREVIEW_SEGMENT_CSS = 20000  # 每张分段预览图的 CSS 像素高度（2 倍 DPI 下 40000 物理像素，避开编码上限）
 PREVIEW_DEVICE_SCALE = 2  # 预览图按 2 倍 DPI 截图，手机高清屏不模糊
 
 
@@ -298,43 +297,53 @@ def page_height_js() -> str:
     }"""
 
 
-def trim_image_whitespace(path: Path, padding: int = 12, threshold: int = 18) -> bool:
-    """裁掉截图四周的空白边并补回少量边距，返回是否发生了裁剪。
+def trim_preview_segments(target_dir: Path, names: list[str], padding: int = 12, threshold: int = 18) -> None:
+    """多段预览图统一裁掉左右白边，只裁最后一段的底部白边。
 
-    网页内容未占满视口时，截图右侧/底部会有大片白边（内容居中或 body 被撑高），
-    直接展示会导致手机上图片右侧空白、底部拖着长白条。
+    各段使用同一组左右边界，保证宽度一致；垂直方向不裁中间段，
+    因此段与段之间在预览页纵向拼接时无缝隙、无重叠、内容不缺失。
     """
-    im = Image.open(path).convert("RGB")
-    bg = Image.new("RGB", im.size, (255, 255, 255))
-    diff = ImageChops.difference(im, bg).convert("L").point(
-        lambda p: 255 if p > threshold else 0
-    )
-    bbox = diff.getbbox()
-    if not bbox:
-        return False  # 全白图，保留原样
-    left = max(0, bbox[0] - padding)
-    top = max(0, bbox[1] - padding)
-    right = min(im.width, bbox[2] + padding)
-    bottom = min(im.height, bbox[3] + padding)
-    if right - left >= im.width and bottom - top >= im.height:
-        return False  # 没有可裁的白边
-    logging.info(
-        "裁剪预览图白边：%dx%d -> %dx%d",
-        im.width, im.height, right - left, bottom - top,
-    )
-    im.crop((left, top, right, bottom)).save(path, "JPEG", quality=82)
-    return True
+    if not names:
+        return
+    images = [Image.open(target_dir / name).convert("RGB") for name in names]
+    try:
+        left = right = None
+        bottoms = []
+        for im in images:
+            diff = ImageChops.difference(im, Image.new("RGB", im.size, (255, 255, 255))).convert("L").point(
+                lambda p: 255 if p > threshold else 0
+            )
+            bbox = diff.getbbox()
+            if not bbox:
+                bottoms.append(im.height)
+                continue
+            seg_left = max(0, bbox[0] - padding)
+            seg_right = min(im.width, bbox[2] + padding)
+            left = seg_left if left is None else min(left, seg_left)
+            right = seg_right if right is None else max(right, seg_right)
+            bottoms.append(min(im.height, bbox[3] + padding))
+        if left is None:
+            return
+        for position, (im, name) in enumerate(zip(images, names)):
+            bottom = bottoms[position] if position == len(images) - 1 else im.height
+            if left == 0 and right >= im.width and bottom == im.height:
+                continue
+            im.crop((left, 0, min(right, im.width), bottom)).save(target_dir / name, "JPEG", quality=82)
+    finally:
+        for im in images:
+            im.close()
 
 
-async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | None:
-    """把整页截成一张不分段的长条 JPG（与长条 PDF 一致），返回文件名。"""
+async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> list[str]:
+    """把整页按固定高度截成多张 JPG（不拼成单张长图），按上下顺序返回文件名。
+
+    预览页按顺序纵向展示这些分段图：首屏先到先显示，其余分段边浏览边加载。
+    """
     metrics = await page.evaluate(page_height_js())
     total = int(metrics.get("height") or 0)
     if total <= 0:
-        return None
+        return []
     target_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{prefix:02d}.jpg"
-    target = target_dir / filename
     await page.evaluate("() => window.scrollTo(0, 0)")
     client = await page.context.new_cdp_session(page)
     viewport_width, page_height = A4_WIDTH_PX, total
@@ -348,14 +357,14 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
     viewport_width = max(1, min(2400, viewport_width))
     total = min(total, page_height)
 
-    # 超高页面一次性截图会触发 Chromium "Unable to encode screenshot"，
-    # 因此按固定高度分块截取（仍保持 2 倍 DPI），再纵向拼成一张完整长图。
-    # 用 CDP 直接截取，避免 Playwright 对越界裁剪区域的校验。
+    # 超高页面一次性截图会触发 Chromium "Unable to encode screenshot"，因此分块截取。
+    # 每块直接作为独立图片保存，不再拼接，裁剪区域严格按 [top, top+height) 划分、互不重叠。
     seg_css = PREVIEW_SEGMENT_CSS
-    parts: list[Path] = []
-    for index, top in enumerate(range(0, total, seg_css)):
+    names: list[str] = []
+    for index, top in enumerate(range(0, total, seg_css), start=1):
         height = min(seg_css, total - top)
-        part = target_dir / f"{prefix:02d}-part{index:02d}.jpg"
+        name = f"{prefix:02d}-{index:02d}.jpg"
+        target = target_dir / name
         result = await client.send(
             "Page.captureScreenshot",
             {
@@ -371,30 +380,11 @@ async def save_preview_image(page: Any, target_dir: Path, prefix: int) -> str | 
                 },
             },
         )
-        part.write_bytes(base64.b64decode(result["data"]))
-        parts.append(part)
+        target.write_bytes(base64.b64decode(result["data"]))
+        names.append(name)
 
-    if len(parts) == 1:
-        parts[0].replace(target)
-    else:
-        logging.info("内容 %d px，分 %d 块截图后拼接为单张长图", total, len(parts))
-        images = [Image.open(part) for part in parts]
-        width = max(image.width for image in images)
-        canvas = Image.new("RGB", (width, sum(image.height for image in images)), "white")
-        offset = 0
-        for image in images:
-            canvas.paste(image, (0, offset))
-            offset += image.height
-            image.close()
-        if canvas.height > MAX_PREVIEW_PX:
-            ratio = MAX_PREVIEW_PX / canvas.height
-            canvas = canvas.resize((max(1, round(canvas.width * ratio)), MAX_PREVIEW_PX), Image.LANCZOS)
-        canvas.save(target, "JPEG", quality=82)
-        for part in parts:
-            part.unlink(missing_ok=True)
-
-    trim_image_whitespace(target)
-    return filename
+    trim_preview_segments(target_dir, names)
+    return names
 
 
 async def print_long_pdf(page: Any, pdf_path: Path) -> None:
@@ -472,8 +462,8 @@ async def capture_pdf(
         logging.info("PDF 已生成：%s（%.1f MB）", pdf_path.name, pdf_path.stat().st_size / 1_048_576)
         if preview_dir is not None:
             try:
-                filename = await save_preview_image(page, preview_dir, preview_index)
-                logging.info("网页预览长图已生成：%s", filename or "无")
+                names = await save_preview_image(page, preview_dir, preview_index)
+                logging.info("网页预览图已生成：%d 张分段图", len(names))
             except Exception as exc:
                 logging.warning(
                     "网页预览图生成失败：%s | %s: %s",
@@ -765,9 +755,9 @@ async def async_main() -> int:
                     )
                     pdf_count += 1
                     if preview_root is not None:
-                        image_name = f"{index:02d}.jpg"
-                        if (preview_root / image_name).is_file():
-                            preview_manifest.append({"index": index, "name": task.name, "image": image_name})
+                        names = sorted(p.name for p in preview_root.glob(f"{index:02d}-*.jpg"))
+                        if names:
+                            preview_manifest.append({"index": index, "name": task.name, "images": names})
                     if not args.no_push:
                         failures.extend(f"{task.name}：{error}" for error in await asyncio.to_thread(deliver_pdf, result, channels))
                 except Exception as exc:

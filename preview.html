@@ -18,7 +18,9 @@
   .task { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 14px; }
   .task h2 { font-size: 14px; margin: 0; padding: 11px 13px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
   .task h2 span { color: var(--muted); font-weight: 400; font-size: 12px; flex: 0 0 auto; }
-  .task img { display: block; width: 100%; height: auto; background: #fff; border-top: 1px solid #f0f2f4; }
+  .task img { display: block; width: 100%; height: auto; background: #fff; margin: 0; }
+  /* 分段图纵向无缝拼接：段与段之间不加边框、不留空隙 */
+  .task h2 + img { border-top: 1px solid #f0f2f4; }
   /* 全屏居中加载遮罩 */
   .loading-mask { position: fixed; inset: 0; background: rgba(255,255,255,.82); display: flex; align-items: center; justify-content: center; z-index: 9999; }
   .loading-mask.hide { display: none; }
@@ -138,7 +140,23 @@ async function main() {
   }
 
   root.innerHTML = '';
-  const pending = [];  // 每张图的加载 Promise，全部结束（成功或最终失败）后才撤加载圈
+  // 加载遮罩只等首屏：已显示内容累计达到一屏高就撤掉，其余分段继续后台加载
+  const totalImages = items.reduce((sum, item) => {
+    if (Array.isArray(item.images)) return sum + item.images.length;
+    if (item.image) return sum + 1;
+    return sum + (item.images || 0);
+  }, 0);
+  let settled = 0;
+  let shownHeight = 0;
+  let loadingHidden = false;
+  function maybeHideLoading() {
+    if (loadingHidden) return;
+    // 首屏已满，或本次所有图片都已处理完（内容不足一屏的小页面）
+    if (shownHeight >= window.innerHeight * 0.9 || settled >= totalImages) {
+      loadingHidden = true;
+      hideLoading();
+    }
+  }
   if (fallbackAll) {
     const note = document.createElement('div');
     note.className = 'note';
@@ -153,41 +171,46 @@ async function main() {
   for (const item of items) {
     const box = document.createElement('div');
     box.className = 'task';
-    // 新格式：单张长图；旧格式：多段图（兼容）。每张图按 CDN 镜像 → Release 顺序回退。
+    // 新格式：images 为分段文件名数组；兼容单张长图 image 与旧的数字 images
     const files = [];
-    if (item.image) {
+    if (Array.isArray(item.images)) {
+      files.push(...item.images);
+    } else if (item.image) {
       files.push(item.image);
     } else {
       for (let n = 1; n <= (item.images || 0); n++) {
         files.push(`${String(item.index).padStart(2, '0')}-${String(n).padStart(2, '0')}.jpg`);
       }
     }
-    box.innerHTML = `<h2>${esc(item.name)}<span>${item.image ? '长图' : files.length + ' 张'}</span></h2>`;
+    box.innerHTML = `<h2>${esc(item.name)}<span>${files.length > 1 ? files.length + ' 张' : '预览图'}</span></h2>`;
     for (const file of files) {
       const candidates = [...cdnBases.map(b => `${b}/${file}`), `${dlBase}/${file}`];
       const img = document.createElement('img');
-      img.loading = 'eager';  // 遮罩期间全部加载完才展示，不用懒加载
+      img.loading = 'eager';
+      img.decoding = 'async';
       img.alt = item.name;
       let ci = 0;
-      const done = new Promise(resolve => {
-        img.onload = () => resolve();
-        img.onerror = () => {
-          ci++;
-          if (ci < candidates.length) { img.src = candidates[ci]; return; }
-          const tip = document.createElement('div');
-          tip.className = 'note err';
-          tip.textContent = '图片加载失败：' + file + '，可能已被清理或网络异常，请返回重试。';
-          img.replaceWith(tip);
-          resolve();
-        };
-      });
-      pending.push(done);
+      img.onload = () => {
+        settled++;
+        shownHeight += img.getBoundingClientRect().height || 0;
+        maybeHideLoading();
+      };
+      img.onerror = () => {
+        ci++;
+        if (ci < candidates.length) { img.src = candidates[ci]; return; }
+        const tip = document.createElement('div');
+        tip.className = 'note err';
+        tip.textContent = '图片加载失败：' + file + '，可能已被清理或网络异常，请返回重试。';
+        img.replaceWith(tip);
+        settled++;
+        maybeHideLoading();
+      };
       img.src = candidates[0];
       box.appendChild(img);
     }
     root.appendChild(box);
   }
-  Promise.all(pending).then(hideLoading);
+  maybeHideLoading();
 }
 
 main();

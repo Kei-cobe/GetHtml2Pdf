@@ -57,7 +57,7 @@ async function getSchedule(env) {
       const list = await res.json();
       if (Array.isArray(list)) {
         const clean = list.map((t) => String(t).trim()).filter((t) => /^\d{2}:\d{2}$/.test(t));
-        await env.DEDUP.put(SCHEDULE_KEY, JSON.stringify(clean), { expirationTtl: 300 });
+        await env.DEDUP.put(SCHEDULE_KEY, JSON.stringify(clean), { expirationTtl: 240 });
         return clean;
       }
     }
