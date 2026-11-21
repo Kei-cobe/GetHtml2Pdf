@@ -246,6 +246,9 @@ function b64decodeUnicode(b64) {
 }
 
 const OWNER = 'Kei-cobe', REPO = 'GetHtml2Pdf', WORKFLOW = 'pdf-delivery.yml';  // 仓库信息硬编码，不再前台展示
+// 外部定时器（Cloudflare Worker）：任务下发统一走这里，由 Worker 做跨终端 5 分钟去重 + 准点 cron 触发
+const WORKER_URL = 'https://pdf-scheduler.wyyxkjy.workers.dev';
+const WORKER_TRIGGER_KEY = 'VYHZUgIWJNvw67aC7Bx2slThbwiQoiU5';
 function cfg() {
   return {
     token: $('token').value.trim(),
@@ -814,7 +817,22 @@ async function dispatch(manual, meta) {
   const count = (meta && meta.count) || 1;
   showLoading();
   try {
-    await gh('POST', `/actions/workflows/${cfg().workflow}/dispatches`, { ref: 'main', inputs: { tasks: manual || '', label: label } });
+    const res = await fetch(WORKER_URL + '/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-trigger-key': WORKER_TRIGGER_KEY },
+      body: JSON.stringify({ tasks: manual || '', label: label }),
+    });
+    let data = null;
+    try { data = await res.json(); } catch (e) { data = null; }
+    if (res.status === 429) {
+      const msg = (data && data.message) || '5 分钟内已下发过相同任务（跨终端拦截）';
+      toast(msg, true);
+      log('已阻止（跨终端）：' + msg, 'err-text');
+      return false;
+    }
+    if (!res.ok) {
+      throw new Error((data && data.message) || `HTTP ${res.status}`);
+    }
     sent.push({ key, ts: now });
     LS.set('dispatches', JSON.stringify(sent.slice(-60)));
     toast('✓ 已下发任务');

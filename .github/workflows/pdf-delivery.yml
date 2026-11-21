@@ -2,10 +2,8 @@ name: 网页抓取并推送 PDF
 run-name: ${{ inputs.label || '定时任务（自动）' }}
 
 on:
-  schedule:
-    # GitHub 使用 UTC：以下时间已由控制台按北京时间自动换算。
-    - cron: "30 10 * * *"
-    - cron: "30 12 * * *"
+  # 定时触发已迁移到外部定时器（Cloudflare Worker pdf-scheduler 的 Cron Trigger），
+  # 准点调用本 workflow_dispatch；此处不再使用 GitHub 原生 schedule，避免调度不可靠与重复触发。
   workflow_dispatch:
     inputs:
       tasks:
