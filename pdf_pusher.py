@@ -284,7 +284,7 @@ A4_WIDTH_MM = 210
 A4_WIDTH_PX = round(A4_WIDTH_MM / 25.4 * 96)  # 与 A4 纸宽 1:1 对应的 CSS 像素
 MAX_PDF_HEIGHT_IN = 200.0  # Chromium 单页高度上限
 MIN_PDF_SCALE = 0.1
-PREVIEW_SEGMENT_CSS = 20000  # 每张分段预览图的 CSS 像素高度（2 倍 DPI 下 40000 物理像素，避开编码上限）
+PREVIEW_SEGMENT_CSS = 8000  # 每张分段预览图的 CSS 像素高度：首段约 2~3MB，首屏尽快显示，后续分段边浏览边加载
 PREVIEW_DEVICE_SCALE = 2  # 预览图按 2 倍 DPI 截图，手机高清屏不模糊
 
 
