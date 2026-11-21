@@ -912,14 +912,10 @@ function beijingToCron(hhmm) {
   return m + ' ' + ((h - 8 + 24) % 24) + ' * * *';
 }
 async function loadSchedule() {
-  const { workflow } = cfg();
-  const data = await gh('GET', '/contents/.github/workflows/' + workflow);
-  workflowSha = data.sha;
-  const yaml = b64decodeUnicode(data.content);
-  const crons = [...yaml.matchAll(/- cron:\s*"([^"]*)"/g)].map(m => m[1]);
-  schedules = [];
-  for (const c of crons) schedules.push(...cronToBeijing(c));
-  schedules.sort();
+  const res = await fetch(WORKER_URL + '/admin/schedule', { headers: { 'x-trigger-key': WORKER_TRIGGER_KEY } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error((data && data.error) || `读取定时失败（HTTP ${res.status}）`);
+  schedules = (data.schedule || []).slice().sort();
   renderSchedules();
   return schedules;
 }
@@ -935,19 +931,16 @@ $('addTime').onclick = () => {
 };
 $('saveSched').onclick = async () => {
   try {
-    const { workflow } = cfg();
-    const data = await gh('GET', '/contents/.github/workflows/' + workflow);
-    workflowSha = data.sha;
-    let yaml = b64decodeUnicode(data.content);
-    const cronLines = schedules.map(beijingToCron);
-    let block = '  schedule:\n';
-    block += '    # GitHub 使用 UTC：以下时间已由控制台按北京时间自动换算。\n';
-    block += cronLines.map(c => '    - cron: "' + c + '"\n').join('');
-    if (!cronLines.length) block += '    # （无定时，仅手动触发）\n';
-    yaml = yaml.replace(/  schedule:\n(?:    .*\n)*/, block);
-    const content = b64encodeUnicode(yaml);
-    await gh('PUT', '/contents/.github/workflows/' + workflow, { message: '更新定时时间', content, sha: workflowSha });
-    log('定时已保存：' + (schedules.length ? schedules.join('、') : '无（仅手动）') + '，约 1 分钟后生效', 'ok-text');
+    const res = await fetch(WORKER_URL + '/admin/schedule', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-trigger-key': WORKER_TRIGGER_KEY },
+      body: JSON.stringify({ schedule: schedules }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error((data && data.error) || `保存定时失败（HTTP ${res.status}）`);
+    schedules = (data.schedule || []).slice().sort();
+    renderSchedules();
+    log('定时已保存：' + (schedules.length ? schedules.join('、') : '无（仅手动）') + '，下一分钟起生效', 'ok-text');
   } catch (e) { log(e.message, 'err-text'); }
 };
 
